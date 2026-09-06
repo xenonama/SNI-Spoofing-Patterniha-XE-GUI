@@ -1,0 +1,13 @@
+Traceback (most recent call last):
+  File "C:\Users\pc\Desktop\SNI-Spoofing-main\sni_spoofer_gui.py", line 480, in <module>
+    app = SNISpooferGUI()
+  File "C:\Users\pc\Desktop\SNI-Spoofing-main\sni_spoofer_gui.py", line 88, in __init__
+    self.create_widgets()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\pc\Desktop\SNI-Spoofing-main\sni_spoofer_gui.py", line 388, in create_widgets
+    paned.add(settings_container, weight=1)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\pc\AppData\Local\Programs\Python\Python314\Lib\tkinter\__init__.py", line 4832, in add
+    self.tk.call((self._w, 'add', child) + self._options(kw))
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_tkinter.TclError: unknown option "-weight"

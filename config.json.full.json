@@ -27,5 +27,12 @@
   "BYPASS_METHOD": "split_seq",
   "HANDSHAKE_TIMEOUT": 2.0,
   "MAX_CONNECTIONS": 200,
-  "FAKE_DELAY": 0.001
+  "FAKE_DELAY": 0.001,
+  "SOCKS5_PORT": 10808,
+  "HTTP_PORT": 10809,
+  "MODE": "Trojan + Xray",
+  "TROJAN_PASSWORD": "humanity",
+  "TRANSPORT": "ws",
+  "WS_PATH": "/assignment",
+  "WS_HOST": "www.creationlong.org"
 }
