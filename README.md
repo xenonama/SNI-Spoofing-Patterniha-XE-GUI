@@ -1,6 +1,6 @@
-SNI Spoofing v2 (gui v3) — DPI bypass via fake-SNI injection (WinDivert).
+SNI Spoofing (gui v3) — DPI bypass via fake-SNI injection (WinDivert).
 
-Original by Patterniha. GUI v2: smarter + stronger engine.
+Original by Patterniha. GUI v3: smarter + stronger engine.
 
 ## Run
 
