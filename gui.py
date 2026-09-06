@@ -44,6 +44,10 @@ METHODS = (
     ("wrong_seq", "Wrong sequence", "One fake packet with an old seq — most compatible"),
     ("wrong_seq_ttl", "Wrong seq + TTL", "Low-TTL trick — stronger against some DPI boxes"),
     ("split_seq", "Split sequence", "Fake handshake sent in 2 pieces — strict filters"),
+    ("fragmented", "Fragmented (3 parts)", "Tear hello into 3 pieces — breaks weak DPI reassembly"),
+    ("padding", "Padding (junk)", "Random leading bytes — abnormal length confuses DPI"),
+    ("delayed_retry", "Delayed retry", "Wrong_seq first, split_seq retry after 1.5s"),
+    ("double_sni", "Double SNI", "Fake + real SNI with delimiter in one packet"),
 )
 
 # Modes shown in the GUI: (key, title, description).
@@ -632,6 +636,16 @@ class SpooferGUI:
             self.snis_text = ""
 
         self._build()
+        # Keep nav indicator aligned on window resize (see _slide_indicator).
+        try:
+            self.root.bind(
+                "<Configure>",
+                lambda e: self._slide_indicator(self._page, force=True)
+                if getattr(e, "widget", None) is None
+                or str(getattr(e, "widget", "")) == str(self.root) else None,
+                add="+")
+        except Exception:
+            pass
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.root.after(120, self._poll_queue)
         self.root.after(600, self._pulse_loop)
@@ -858,10 +872,16 @@ class SpooferGUI:
         else:
             pg.place(relx=0, rely=0, relwidth=1, relheight=1)
 
-    def _slide_indicator(self, name, step=0):
+    def _slide_indicator(self, name, step=0, force=False):
         try:
             target = self._nav_buttons[name].winfo_y()
         except Exception:
+            return
+        if force:
+            try:
+                self.nav_ind.place(x=0, y=target)
+            except Exception:
+                pass
             return
         try:
             cur = self.nav_ind.winfo_y()

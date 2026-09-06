@@ -32,7 +32,7 @@ INJECTOR_KEYS = ("LISTEN_HOST", "LISTEN_PORT", "CONNECT_IP", "CONNECT_PORT",
                  "ENDPOINTS", "FAKE_SNI", "FAKE_SNIS", "BYPASS_METHOD",
                  "HANDSHAKE_TIMEOUT", "MAX_CONNECTIONS", "FAKE_DELAY")
 
-SUPPORTED_METHODS = ("auto", "wrong_seq", "wrong_seq_ttl", "split_seq")
+SUPPORTED_METHODS = ("auto", "wrong_seq", "wrong_seq_ttl", "split_seq", "fragmented", "padding", "delayed_retry", "double_sni")
 
 
 def _as_int(v, default):
