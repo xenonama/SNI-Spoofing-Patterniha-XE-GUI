@@ -87,6 +87,13 @@ THEME = {
     "faint": "#5C6575",
     "disabled_bg": "#2A2F38",
     "disabled_fg": "#6B7280",
+    "stats_bg": "#141922",
+    "console_bg": "#10131A",
+    "toggle_off": "#3A4150",
+    "selector_selected": "#1E2A36",
+    "selector_hover": "#232A36",
+    "btn_hover": "#252B36",
+    "btn_press": "#22262E",
 }
 
 # Modern font stack with graceful fallback (Win10/Win11, Python 3.8+).
@@ -312,7 +319,7 @@ class ModernButton(tk.Canvas):
     STYLES = {
         "primary": (THEME["primary"], THEME["primary_hover"], THEME["primary_press"], "#FFFFFF"),
         "danger": (THEME["danger"], THEME["danger_hover"], THEME["danger_press"], "#FFFFFF"),
-        "ghost": (THEME["card"], "#252B36", "#22262E", THEME["fg"]),
+        "ghost": (THEME["card"], THEME["btn_hover"], THEME["btn_press"], THEME["fg"]),
         "accent": ("#1F6F9B", "#2A86B8", "#185A7D", "#FFFFFF"),
     }
 
@@ -438,7 +445,7 @@ class ToggleSwitch(tk.Canvas):
         self.delete("all")
         on = bool(self.var.get())
         w, h, r = self._tw, self._th, self._th / 2
-        track = THEME["primary"] if on else "#3A4150"
+        track = THEME["primary"] if on else THEME["toggle_off"]
         _round_rect(self, 1, 1, w - 1, h - 1, r, fill=track, outline="")
         knob_x = w - r - 2 if on else r + 2
         self.create_oval(knob_x - (r - 3), 3, knob_x + (r - 3), h - 3,
@@ -464,10 +471,10 @@ class Toast:
             self.win.attributes("-alpha", 0.0)
         except Exception:
             pass
-        frame = tk.Frame(self.win, bg="#10131A", highlightbackground=color,
+        frame = tk.Frame(self.win, bg=THEME["console_bg"], highlightbackground=color,
                          highlightthickness=1)
         frame.pack(fill=tk.BOTH, expand=True)
-        tk.Label(frame, text=text, font=FONT_N, fg=THEME["fg"], bg="#10131A",
+        tk.Label(frame, text=text, font=FONT_N, fg=THEME["fg"], bg=THEME["console_bg"],
                  wraplength=300, justify=tk.LEFT).pack(padx=14, pady=10)
         Toast._active.append(self.win)
         if len(Toast._active) > 3:
@@ -636,6 +643,12 @@ class SpooferGUI:
             self.snis_text = ""
 
         self._build()
+        # Place nav indicator correctly on first load (no 800ms glitch).
+        try:
+            self.root.update_idletasks()
+            self._slide_indicator("bypass", force=True)
+        except Exception:
+            pass
         # Keep nav indicator aligned on window resize (see _slide_indicator).
         try:
             self.root.bind(
@@ -691,11 +704,11 @@ class SpooferGUI:
         try:
             if self.running:
                 self._pulse_on = not self._pulse_on
-                dot = "#3DDC84" if self._pulse_on else THEME["success_dim"]
+                dot = THEME["success"] if self._pulse_on else THEME["success_dim"]
                 self.status_dot.config(fg=dot)
                 self.status_pill.config(highlightbackground=dot)
             else:
-                self.status_dot.config(fg="#5C6575")
+                self.status_dot.config(fg=THEME["faint"])
                 self.status_pill.config(highlightbackground=THEME["card_edge"])
         except Exception:
             pass
@@ -755,7 +768,7 @@ class SpooferGUI:
                                     highlightthickness=1, padx=12, pady=5)
         self.status_pill.pack(side=tk.RIGHT)
         self.status_dot = tk.Label(self.status_pill, text="●", font=("Segoe UI", 12, "bold"),
-                                   fg="#5C6575", bg=THEME["header"])
+                                   fg=THEME["faint"], bg=THEME["header"])
         self.status_dot.pack(side=tk.LEFT)
         self.status_lbl = tk.Label(self.status_pill, text="INACTIVE", font=FONT_STATUS,
                                    fg=THEME["muted"], bg=THEME["header"])
@@ -783,7 +796,7 @@ class SpooferGUI:
             b.configure(bg=THEME["sidebar"])
             b.pack(fill=tk.X, padx=10, pady=3)
             self._nav_buttons[key] = b
-        tk.Frame(side, bg="#2A2F3A", height=1).pack(fill=tk.X, padx=16, pady=12)
+        tk.Frame(side, bg=THEME["card_edge"], height=1).pack(fill=tk.X, padx=16, pady=12)
         tk.Label(side, text="ENGINE", font=("Segoe UI Semibold", 8), fg=THEME["faint"],
                  bg=THEME["sidebar"]).pack(anchor="w", padx=16, pady=(0, 6))
         self.btn_start = ModernButton(side, text="▶   START", command=self.start,
@@ -811,6 +824,13 @@ class SpooferGUI:
         canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Wheel over empty canvas area should scroll too (children are
+        # bound separately via _bind_wheel_tree).
+        try:
+            canvas.bind("<MouseWheel>",
+                        lambda e, c=canvas: self._wheel_scroll(e, c), add="+")
+        except Exception:
+            pass
         body = tk.Frame(canvas, bg=THEME["bg"])
         win = canvas.create_window((0, 0), window=body, anchor="nw")
 
@@ -912,7 +932,7 @@ class SpooferGUI:
         self._row(card, "Listen port", self.v_listen_port, w=12)
         self._row(card, "Endpoint IP (primary)", self.v_endpoint_ip)
         self._row(card, "Endpoint port", self.v_endpoint_port, w=12)
-        tk.Frame(p1, bg="#2A2F3A", height=1).pack(fill=tk.X, pady=(0, 14))
+        tk.Frame(p1, bg=THEME["card_edge"], height=1).pack(fill=tk.X, pady=(0, 14))
         self._card(p1, "Spoof").pack(fill=tk.X, pady=(0, 14))
         card = self._cards[-1]
         self._row(card, "Fake SNI (primary)", self.v_fake_sni)
@@ -1015,6 +1035,15 @@ class SpooferGUI:
                      font=FONT_N, relief=tk.FLAT, width=width, insertbackground=THEME["accent"],
                      highlightthickness=1, highlightbackground=THEME["card"],
                      highlightcolor=THEME["input_edge"], selectbackground=THEME["accent_dim"])
+        try:
+            e.bind("<FocusIn>",
+                   lambda ev: ev.widget.config(highlightbackground=THEME["accent"]),
+                   add="+")
+            e.bind("<FocusOut>",
+                   lambda ev: ev.widget.config(highlightbackground=THEME["card"]),
+                   add="+")
+        except Exception:
+            pass
         return e
 
     def _row(self, parent, label, var, w=30, text_var_name=None, hint=None):
@@ -1055,15 +1084,39 @@ class SpooferGUI:
                       cursor="hand2")
         t2.pack(anchor="w")
         row = {"outer": outer, "inner": inner, "dot": dot, "txt": txt,
-               "t1": t1, "t2": t2}
+               "t1": t1, "t2": t2, "_selected": False}
         for w in (outer, inner, dot, txt, t1, t2):
             w.bind("<Button-1>", lambda e: on_pick())
+
+        def _hover_in(e=None, _row=row):
+            try:
+                for k in ("inner", "txt", "t1", "t2", "dot"):
+                    _row[k].configure(bg=THEME["selector_hover"])
+            except Exception:
+                pass
+
+        def _hover_out(e=None, _row=row):
+            try:
+                self._paint_selector_row(_row, _row.get("_selected", False))
+            except Exception:
+                pass
+
+        for w in (outer, inner, dot, txt, t1, t2):
+            try:
+                w.bind("<Enter>", _hover_in, add="+")
+                w.bind("<Leave>", _hover_out, add="+")
+            except Exception:
+                pass
         return row
 
     def _paint_selector_row(self, row, selected):
         # Selected: accent border + subtle tint across the whole card.
+        try:
+            row["_selected"] = bool(selected)
+        except Exception:
+            pass
         row["outer"].configure(bg=THEME["accent"] if selected else THEME["card_edge"])
-        inner_bg = "#1E2A36" if selected else THEME["input"]
+        inner_bg = THEME["selector_selected"] if selected else THEME["input"]
         try:
             row["inner"].configure(bg=inner_bg)
             row["txt"].configure(bg=inner_bg)
@@ -1128,23 +1181,23 @@ class SpooferGUI:
 
     # -- stats + console -------------------------------------------
     def _build_stats(self, right):
-        bar = tk.Frame(right, bg="#141922", highlightbackground=THEME["card_edge"],
+        bar = tk.Frame(right, bg=THEME["stats_bg"], highlightbackground=THEME["card_edge"],
                        highlightthickness=1, pady=6)
         bar.pack(fill=tk.X, pady=(10, 0))
         stats_font = ("Segoe UI Variable", 9)
-        self.lbl_active = tk.Label(bar, text="● Active 0", font=stats_font, fg=THEME["accent"], bg="#141922")
+        self.lbl_active = tk.Label(bar, text="● Active 0", font=stats_font, fg=THEME["accent"], bg=THEME["stats_bg"])
         self.lbl_active.pack(side=tk.LEFT, padx=10)
-        self.lbl_total = tk.Label(bar, text="Total 0", font=stats_font, fg=THEME["fg"], bg="#141922")
+        self.lbl_total = tk.Label(bar, text="Total 0", font=stats_font, fg=THEME["fg"], bg=THEME["stats_bg"])
         self.lbl_total.pack(side=tk.LEFT, padx=10)
-        self.lbl_okfail = tk.Label(bar, text="OK 0 · Fail 0", font=stats_font, fg=THEME["muted"], bg="#141922")
+        self.lbl_okfail = tk.Label(bar, text="OK 0 · Fail 0", font=stats_font, fg=THEME["muted"], bg=THEME["stats_bg"])
         self.lbl_okfail.pack(side=tk.LEFT, padx=10)
-        self.lbl_best = tk.Label(bar, text="Best —", font=stats_font, fg=THEME["muted"], bg="#141922")
+        self.lbl_best = tk.Label(bar, text="Best —", font=stats_font, fg=THEME["muted"], bg=THEME["stats_bg"])
         self.lbl_best.pack(side=tk.LEFT, padx=10)
-        self.lbl_method = tk.Label(bar, text="Method —", font=stats_font, fg=THEME["muted"], bg="#141922")
+        self.lbl_method = tk.Label(bar, text="Method —", font=stats_font, fg=THEME["muted"], bg=THEME["stats_bg"])
         self.lbl_method.pack(side=tk.LEFT, padx=10)
-        self.lbl_up = tk.Label(bar, text="▲ 0 B", font=stats_font, fg=THEME["success"], bg="#141922")
+        self.lbl_up = tk.Label(bar, text="▲ 0 B", font=stats_font, fg=THEME["success"], bg=THEME["stats_bg"])
         self.lbl_up.pack(side=tk.LEFT, padx=10)
-        self.lbl_down = tk.Label(bar, text="▼ 0 B", font=stats_font, fg=THEME["accent"], bg="#141922")
+        self.lbl_down = tk.Label(bar, text="▼ 0 B", font=stats_font, fg=THEME["accent"], bg=THEME["stats_bg"])
         self.lbl_down.pack(side=tk.LEFT, padx=10)
 
     def _build_console(self, right):
@@ -1178,7 +1231,7 @@ class SpooferGUI:
                 mono_font = ("Consolas", 10)
         except Exception:
             mono_font = FONT_MONO
-        self.console = scrolledtext.ScrolledText(box, bg="#10131A", fg=THEME["fg"],
+        self.console = scrolledtext.ScrolledText(box, bg=THEME["console_bg"], fg=THEME["fg"],
                                                  font=mono_font, relief=tk.FLAT, wrap=tk.WORD, height=8,
                                                  insertbackground=THEME["accent"],
                                                  selectbackground=THEME["accent_dim"])
@@ -1467,6 +1520,9 @@ class SpooferGUI:
         if self.running:
             self.log("Already running.", "warning")
             return
+        # Drop stale stats/logs from a previous run so counters don't flash
+        # old values after restart; also frees queued memory.
+        self._drain_queue()
         cfg, err = self._collect()
         if err:
             messagebox.showerror("Invalid config", err)
@@ -1581,6 +1637,14 @@ class SpooferGUI:
                     noise_tail -= 1
                     continue
                 noise_tail = 0
+                # Bound queue memory: if the UI thread falls behind (long
+                # uptime, log burst), drop routine log lines rather than
+                # growing msg_q unbounded. Stats/exit messages still pass.
+                try:
+                    if self.msg_q.qsize() > 2000:
+                        continue
+                except Exception:
+                    pass
                 self.msg_q.put(("log", tag, line))
         except Exception as exc:
             self.msg_q.put(("log", tag, "[%s] reader error: %s" % (tag, exc)))
@@ -1796,14 +1860,14 @@ class SpooferGUI:
     # -- misc UI ---------------------------------------------------
     def _set_status(self, on: bool):
         if on:
-            self.status_dot.config(fg="#3DDC84")
-            self.status_lbl.config(text="ACTIVE", fg="#3DDC84", font=FONT_STATUS)
+            self.status_dot.config(fg=THEME["success"])
+            self.status_lbl.config(text="ACTIVE", fg=THEME["success"], font=FONT_STATUS)
             try:
-                self.status_pill.config(highlightbackground="#3DDC84")
+                self.status_pill.config(highlightbackground=THEME["success"])
             except Exception:
                 pass
         else:
-            self.status_dot.config(fg="#5C6575")
+            self.status_dot.config(fg=THEME["faint"])
             self.status_lbl.config(text="INACTIVE", fg=THEME["muted"], font=FONT_STATUS)
             try:
                 self.status_pill.config(highlightbackground=THEME["card_edge"])
@@ -1811,7 +1875,24 @@ class SpooferGUI:
                 pass
 
     def log(self, text: str, level: str = "info"):
+        # Bound queue memory over long uptime: drop gui logs if UI is behind.
+        try:
+            if self.msg_q.qsize() > 2000:
+                return
+        except Exception:
+            pass
         self.msg_q.put(("log", "gui", text))
+
+    def _drain_queue(self):
+        """Drop pending stats/log messages (e.g. on START/STOP) to free memory
+        and avoid stale stats from a previous run flashing after restart."""
+        try:
+            while True:
+                self.msg_q.get_nowait()
+        except queue.Empty:
+            pass
+        except Exception:
+            pass
 
     def _append(self, text: str, level: str):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -1825,6 +1906,17 @@ class SpooferGUI:
             pass
         try:
             if self.log_file:
+                # Rotate daily log past ~10MB so long uptime can't fill disk.
+                try:
+                    if os.path.exists(self.log_file) and os.path.getsize(self.log_file) > 10 * 1024 * 1024:
+                        base, ext = os.path.splitext(self.log_file)
+                        try:
+                            os.rename(self.log_file,
+                                      "%s_%s%s" % (base, datetime.now().strftime("%H%M%S"), ext))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 with open(self.log_file, "a", encoding="utf-8") as f:
                     f.write(line)
         except Exception:

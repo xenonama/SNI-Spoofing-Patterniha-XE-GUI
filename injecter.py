@@ -1,5 +1,6 @@
 # injecter.py (بدون تغییر)
 import sys
+import time
 from abc import ABC, abstractmethod
 
 try:
@@ -40,5 +41,10 @@ class TcpInjector(ABC):
                 except Exception:
                     if self._stop.is_set():
                         break
+                    # Avoid hot-spin on repeated recv failures (CPU spike).
+                    try:
+                        time.sleep(0.01)
+                    except Exception:
+                        pass
                     continue
                 self.inject(packet)

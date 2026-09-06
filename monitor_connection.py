@@ -36,6 +36,18 @@ _start_time = time.time()
 _method_board: dict[str, dict[str, int]] = {}
 _endpoint_board: dict[str, dict[str, int]] = {}
 _sni_board: dict[str, dict[str, int]] = {}
+# Bound scoreboard memory: distinct endpoint/SNI/method keys accumulate over
+# long uptime (rotation, failover). Prune oldest when over the cap — core
+# stats (counters, traffic) are unaffected.
+_BOARD_CAP = 200
+
+
+def _prune_board(board: dict) -> None:
+    try:
+        while len(board) > _BOARD_CAP:
+            board.pop(next(iter(board)), None)
+    except Exception:
+        pass
 
 
 def increment_active():
@@ -124,12 +136,18 @@ def record_result(endpoint: str = "", sni: str = "", ok: bool = True, method: st
             if endpoint:
                 cell = _endpoint_board.setdefault(endpoint, {"ok": 0, "fail": 0})
                 cell["ok" if ok else "fail"] += 1
+                if len(_endpoint_board) > _BOARD_CAP:
+                    _prune_board(_endpoint_board)
             if sni:
                 cell = _sni_board.setdefault(sni, {"ok": 0, "fail": 0})
                 cell["ok" if ok else "fail"] += 1
+                if len(_sni_board) > _BOARD_CAP:
+                    _prune_board(_sni_board)
             if method:
                 cell = _method_board.setdefault(str(method), {"ok": 0, "fail": 0})
                 cell["ok" if ok else "fail"] += 1
+                if len(_method_board) > _BOARD_CAP:
+                    _prune_board(_method_board)
     except Exception:
         pass
 

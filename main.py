@@ -11,6 +11,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 import traceback
 
 from utils.network_tools import get_default_interface_ipv4
@@ -271,6 +272,70 @@ shutdown_event = threading.Event()
 conn_sem = threading.BoundedSemaphore(MAX_CONNECTIONS)
 
 
+def _drop_conn(conn) -> None:
+    """Idempotent evict: clear monitor flag and remove dict entry. Never raises."""
+    if conn is None:
+        return
+    try:
+        conn.monitor = False
+    except Exception:
+        pass
+    try:
+        fake_injective_connections.pop(getattr(conn, "id", None), None)
+    except Exception:
+        pass
+
+
+def _close_sock_quiet(sock) -> None:
+    if sock is None:
+        return
+    try:
+        sock.close()
+    except Exception:
+        pass
+
+
+async def connection_reaper(interval: float = 60.0, max_age: float = 120.0):
+    """Safety net: evict stale monitor=False entries older than max_age.
+
+    Normal paths already pop the dict in handle()/_close_conn; this only
+    catches entries missed due to an exception between register and pop.
+    Success paths pop within milliseconds, so a 120s threshold never
+    touches live handshakes.
+    """
+    while not shutdown_event.is_set():
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            break
+        try:
+            now = time.time()
+            try:
+                items = list(fake_injective_connections.items())
+            except Exception:
+                continue
+            stale = []
+            for key, c in items:
+                try:
+                    if not getattr(c, "monitor", True) and \
+                            (now - getattr(c, "created_at", now)) > max_age:
+                        stale.append(key)
+                except Exception:
+                    continue
+            for key in stale:
+                try:
+                    fake_injective_connections.pop(key, None)
+                except Exception:
+                    pass
+            if stale:
+                log.debug("reaped %d stale connection(s)", len(stale))
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            log.debug("reaper error", exc_info=True)
+            continue
+
+
 def set_keepalive(sock: socket.socket):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
     for level, opt, val in (
@@ -458,6 +523,20 @@ async def handle(incoming_sock: socket.socket, incoming_remote_addr):
             except Exception:
                 pass
     finally:
+        # Safety net: every path (return, exception, cancellation) evicts
+        # the dict entry and releases sockets. Manual pops above are
+        # idempotent, so double-pop here is harmless but closes the leak
+        # when an exception happens before/after `conn` is assigned.
+        _drop_conn(conn)
+        _close_sock_quiet(outgoing_sock)
+        # incoming_sock is owned by handle() until relay finishes; by the
+        # time finally runs the relay is done (or never started), so this
+        # is safe and covers early-error paths that forgot to close it.
+        # Note: relay_main_loop already closes both sockets on success.
+        try:
+            incoming_sock.close()
+        except Exception:
+            pass
         try:
             conn_sem.release()
         except ValueError:
@@ -494,6 +573,7 @@ async def main():
         print(f"Auto-rotate pool: {', '.join(REAL_METHODS)}", flush=True)
 
     asyncio.create_task(stats_reporter())
+    asyncio.create_task(connection_reaper(interval=60.0, max_age=120.0))
 
     while not shutdown_event.is_set():
         try:

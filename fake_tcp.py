@@ -8,6 +8,7 @@ import socket
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 try:
@@ -78,6 +79,9 @@ class FakeTcpInjector(TcpInjector):
         self.connections = connections
         self.fake_delay = fake_delay
         self.on_event = on_event
+        # Bounded pool: one thread per connection (200+ short-lived threads)
+        # caused CPU/memory pressure. 50 workers queue excess work instead.
+        self._executor = ThreadPoolExecutor(max_workers=50, thread_name_prefix="fake-send")
 
     def _emit(self, level: str, msg: str):
         try:
@@ -87,6 +91,22 @@ class FakeTcpInjector(TcpInjector):
                 print(msg, flush=True)
         except Exception:
             pass
+
+    def _remove_connection(self, connection: FakeInjectiveConnection):
+        """Drop a connection from the shared dict. Never raises."""
+        try:
+            self.connections.pop(getattr(connection, "id", None), None)
+        except Exception:
+            pass
+
+    def stop(self):
+        try:
+            super().stop()
+        finally:
+            try:
+                self._executor.shutdown(wait=False)
+            except Exception:
+                pass
 
     def _close_conn(self, connection: FakeInjectiveConnection, msg: str, counted: bool,
                      quiet: bool = False):
@@ -99,6 +119,11 @@ class FakeTcpInjector(TcpInjector):
         except Exception:
             pass
         connection.monitor = False
+        # Fix leak: previously the dict entry survived _close_conn, so failed
+        # connections accumulated until main.py popped them (which could be
+        # skipped on exception paths). Always evict here; main.py pops are
+        # idempotent (pop with default) so double-removal is safe.
+        self._remove_connection(connection)
         if counted and connection.counted:
             finish_failed()
             connection.counted = False
@@ -421,10 +446,13 @@ class FakeTcpInjector(TcpInjector):
                                               connection.syn_seq))
                 return
             # SUCCESS — bypass handshake complete. Release from monitor + stats.
+            # Evict from the shared dict now: main.py also pops (idempotent),
+            # so a missed pop there can no longer leak the entry.
             connection.monitor = False
             if connection.counted:
                 finish_success()
                 connection.counted = False
+            self._remove_connection(connection)
             connection.t2a_msg = "fake_data_ack_recv"
             try:
                 connection.running_loop.call_soon_threadsafe(connection.t2a_event.set)
@@ -480,7 +508,12 @@ class FakeTcpInjector(TcpInjector):
             increment_total()
             increment_active()
             connection.counted = True
-            threading.Thread(target=self.fake_send_thread, args=(packet, connection), daemon=True).start()
+            try:
+                self._executor.submit(self.fake_send_thread, packet, connection)
+            except RuntimeError:
+                # Executor already shut down (injector stopping): fall back
+                # to a short-lived daemon thread so the send is not lost.
+                threading.Thread(target=self.fake_send_thread, args=(packet, connection), daemon=True).start()
             return
         self.on_unexpected_packet(packet, connection, "unexpected outbound packet")
         return
