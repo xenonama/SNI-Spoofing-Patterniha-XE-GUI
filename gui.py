@@ -60,17 +60,17 @@ from utils import lists as lists_mod
 # Theme (Fluent-inspired dark)
 # --------------------------------------------------------------------------
 THEME = {
-    "bg": "#16181D",        # window
-    "sidebar": "#101216",   # nav rail
-    "card": "#1F232B",       # cards
-    "card_edge": "#2E3542",  # card border
-    "input": "#262C36",      # entries
-    "input_edge": "#3A4356",  # entry focus ring
-    "header": "#1A1D24",
-    "accent": "#4CC2FF",
+    "bg": "#0A0C10",        # window (deeper black)
+    "sidebar": "#0D0F14",   # nav rail
+    "card": "#181C24",       # cards
+    "card_edge": "#2A2F3A",  # card border
+    "input": "#1E232E",      # entries
+    "input_edge": "#4FC3F7",  # entry focus ring
+    "header": "#11141A",
+    "accent": "#4FC3F7",
     "accent_dim": "#2A6FA0",
     "primary": "#2B88D8",
-    "primary_hover": "#3DA2F5",
+    "primary_hover": "#3D9CE8",
     "primary_press": "#1E6CB0",
     "success": "#3DDC84",
     "success_dim": "#1E7A4C",
@@ -78,19 +78,24 @@ THEME = {
     "danger_hover": "#F26D66",
     "danger_press": "#B93A34",
     "warning": "#F5B544",
-    "fg": "#F2F4F8",
-    "muted": "#9AA3B2",
+    "fg": "#FFFFFF",
+    "muted": "#A0AAB8",
     "faint": "#5C6575",
     "disabled_bg": "#2A2F38",
     "disabled_fg": "#6B7280",
 }
 
-FONT_TITLE = ("Segoe UI Semibold", 15)
-FONT_SUB = ("Segoe UI", 9)
+# Modern font stack with graceful fallback (Win10/Win11, Python 3.8+).
+# Tk falls back silently for missing families, so prefer newer names first.
+# NOTE: Tk weight must be "bold"/"normal" — "semibold" raises TclError.
+FONT_TITLE = ("Segoe UI Variable", 16, "bold")
+FONT_SUB = ("Segoe UI Variable", 10)
 FONT_H = ("Segoe UI Semibold", 10)
-FONT_N = ("Segoe UI", 9)
+FONT_N = ("Segoe UI Variable", 10)
 FONT_BTN = ("Segoe UI Semibold", 10)
-FONT_MONO = ("Consolas", 9)
+FONT_MONO = ("Cascadia Code", 10)
+FONT_MONO_FALLBACK = ("JetBrains Mono", 10)
+FONT_STATUS = ("Segoe UI", 10, "bold")
 
 
 # --------------------------------------------------------------------------
@@ -163,6 +168,27 @@ def _is_overlapped_tail(line: str) -> bool:
         return True
     if low.startswith("oserror: [winerror 6]"):
         return True
+    return False
+
+
+def _is_routine_injector_line(line: str) -> bool:
+    """True for routine per-packet injector chatter that is always hidden.
+
+    These lines are correct but extremely repetitive (one per failed bypass):
+    'unexpected ... packet ...', 'reinject ...', 'fake_send failed', etc.
+    Stats counters (OK/Fail) + traffic already summarize them, so the console
+    never shows them (Verbose toggle removed). Startup lines, FATAL errors and
+    smart-tool output are NOT routine and always pass through.
+    """
+    low = line.lower()
+    if "unexpected " in low and "packet" in low:
+        return True
+    for pat in ("reinject ", "fake_send failed",
+                "packet with unknown direction",
+                "forward unknown-direction",
+                "inject error (surviving)"):
+        if pat in low:
+            return True
     return False
 
 
@@ -282,7 +308,7 @@ class ModernButton(tk.Canvas):
     STYLES = {
         "primary": (THEME["primary"], THEME["primary_hover"], THEME["primary_press"], "#FFFFFF"),
         "danger": (THEME["danger"], THEME["danger_hover"], THEME["danger_press"], "#FFFFFF"),
-        "ghost": (THEME["card"], "#2C333F", "#22262E", THEME["fg"]),
+        "ghost": (THEME["card"], "#252B36", "#22262E", THEME["fg"]),
         "accent": ("#1F6F9B", "#2A86B8", "#185A7D", "#FFFFFF"),
     }
 
@@ -434,10 +460,10 @@ class Toast:
             self.win.attributes("-alpha", 0.0)
         except Exception:
             pass
-        frame = tk.Frame(self.win, bg="#0E1013", highlightbackground=color,
+        frame = tk.Frame(self.win, bg="#10131A", highlightbackground=color,
                          highlightthickness=1)
         frame.pack(fill=tk.BOTH, expand=True)
-        tk.Label(frame, text=text, font=FONT_N, fg=THEME["fg"], bg="#0E1013",
+        tk.Label(frame, text=text, font=FONT_N, fg=THEME["fg"], bg="#10131A",
                  wraplength=300, justify=tk.LEFT).pack(padx=14, pady=10)
         Toast._active.append(self.win)
         if len(Toast._active) > 3:
@@ -466,9 +492,9 @@ class Toast:
             a = min(0.96, a + 0.16)
             self.win.attributes("-alpha", a)
             if a < 0.96:
-                self.win.after(20, lambda: self._fade_in(a))
+                self.win.after(15, lambda: self._fade_in(a))
             else:
-                self.win.after(1900, lambda: self._fade_out(0.96))
+                self.win.after(1500, lambda: self._fade_out(0.96))
         except Exception:
             pass
 
@@ -569,6 +595,7 @@ class SpooferGUI:
         self.v_timeout = tk.StringVar(value=str(cfg.get("HANDSHAKE_TIMEOUT", 2.0)))
         self.v_maxconn = tk.StringVar(value=str(cfg.get("MAX_CONNECTIONS", 200)))
         self.v_autorestart = tk.BooleanVar(value=True)
+        # Verbose toggle removed: console always behaves as Verbose=OFF.
         try:
             self.v_method.trace_add("write", lambda *a: self._refresh_method_ui())
         except Exception:
@@ -650,11 +677,11 @@ class SpooferGUI:
         try:
             if self.running:
                 self._pulse_on = not self._pulse_on
-                dot = THEME["success"] if self._pulse_on else THEME["success_dim"]
+                dot = "#3DDC84" if self._pulse_on else THEME["success_dim"]
                 self.status_dot.config(fg=dot)
                 self.status_pill.config(highlightbackground=dot)
             else:
-                self.status_dot.config(fg=THEME["faint"])
+                self.status_dot.config(fg="#5C6575")
                 self.status_pill.config(highlightbackground=THEME["card_edge"])
         except Exception:
             pass
@@ -709,14 +736,14 @@ class SpooferGUI:
         self.lbl_uptime = tk.Label(right, text="--:--", font=FONT_N, fg=THEME["muted"],
                                    bg=THEME["header"])
         self.lbl_uptime.pack(side=tk.RIGHT, padx=(12, 0))
-        # status pill
+        # status pill with pulsing indicator
         self.status_pill = tk.Frame(right, bg=THEME["header"], highlightbackground=THEME["card_edge"],
                                     highlightthickness=1, padx=12, pady=5)
         self.status_pill.pack(side=tk.RIGHT)
-        self.status_dot = tk.Label(self.status_pill, text="●", font=("Segoe UI", 11),
-                                   fg=THEME["faint"], bg=THEME["header"])
+        self.status_dot = tk.Label(self.status_pill, text="●", font=("Segoe UI", 12, "bold"),
+                                   fg="#5C6575", bg=THEME["header"])
         self.status_dot.pack(side=tk.LEFT)
-        self.status_lbl = tk.Label(self.status_pill, text="INACTIVE", font=("Segoe UI Semibold", 9),
+        self.status_lbl = tk.Label(self.status_pill, text="INACTIVE", font=FONT_STATUS,
                                    fg=THEME["muted"], bg=THEME["header"])
         self.status_lbl.pack(side=tk.LEFT, padx=(6, 0))
         # slim progress bar (visible while starting)
@@ -732,21 +759,21 @@ class SpooferGUI:
                  bg=THEME["sidebar"]).pack(anchor="w", padx=16, pady=(14, 6))
         # Sliding indicator lives in sidebar coords (same parent as the
         # buttons, so winfo_y() lines up). Placed after layout settles.
-        self.nav_ind = tk.Frame(side, bg=THEME["accent"], width=3, height=38)
+        self.nav_ind = tk.Frame(side, bg=THEME["accent"], width=4, height=42)
         self.nav_ind.place(x=0, y=40)
-        for key, label in (("bypass", "◉   DPI Bypass"),
-                           ("proxy", "◈   Proxy / Xray"),
-                           ("tools", "⚙   Smart Tools")):
+        for key, label in (("bypass", "🛡️   DPI Bypass"),
+                           ("proxy", "🌐   Proxy / Xray"),
+                           ("tools", "🛠   Smart Tools")):
             b = ModernButton(side, text=label, command=lambda k=key: self._show_page(k),
-                             style="ghost", height=38, align="left")
+                             style="ghost", height=42, align="left")
             b.configure(bg=THEME["sidebar"])
             b.pack(fill=tk.X, padx=10, pady=3)
             self._nav_buttons[key] = b
-        tk.Frame(side, bg="#23272F", height=1).pack(fill=tk.X, padx=16, pady=12)
+        tk.Frame(side, bg="#2A2F3A", height=1).pack(fill=tk.X, padx=16, pady=12)
         tk.Label(side, text="ENGINE", font=("Segoe UI Semibold", 8), fg=THEME["faint"],
                  bg=THEME["sidebar"]).pack(anchor="w", padx=16, pady=(0, 6))
         self.btn_start = ModernButton(side, text="▶   START", command=self.start,
-                                      style="primary", height=40)
+                                       style="primary", height=44)
         self.btn_start.configure(bg=THEME["sidebar"])
         self.btn_start.pack(fill=tk.X, padx=10, pady=3)
         self.btn_stop = ModernButton(side, text="⏹   STOP", command=self.stop,
@@ -843,29 +870,30 @@ class SpooferGUI:
         if abs(target - cur) < 2 or step > 12:
             self.nav_ind.place(x=0, y=target)
             return
-        nxt = cur + (target - cur) * 0.35
+        nxt = cur + (target - cur) * 0.45
         self.nav_ind.place(x=0, y=nxt)
-        self.root.after(16, lambda: self._slide_indicator(name, step + 1))
+        self.root.after(12, lambda: self._slide_indicator(name, step + 1))
 
     def _slide_page_in(self, pg, step=0):
-        total = 7
+        total = 4
         if step >= total:
             pg.place(relx=0, rely=0, relwidth=1, relheight=1)
             return
         t = step / total
         pg.place(relx=0.05 * (1 - t), rely=0, relwidth=0.95 + 0.05 * t, relheight=1)
-        self.root.after(16, lambda: self._slide_page_in(pg, step + 1))
+        self.root.after(12, lambda: self._slide_page_in(pg, step + 1))
 
     # -- pages -----------------------------------------------------
     def _build_pages(self):
         p1 = self._page_frame("bypass")
-        self._card(p1, "Connection").pack(fill=tk.X, pady=(0, 10))
+        self._card(p1, "Connection").pack(fill=tk.X, pady=(0, 14))
         card = self._cards[-1]
         self._row(card, "Listen host", self.v_listen_host)
         self._row(card, "Listen port", self.v_listen_port, w=12)
         self._row(card, "Endpoint IP (primary)", self.v_endpoint_ip)
         self._row(card, "Endpoint port", self.v_endpoint_port, w=12)
-        self._card(p1, "Spoof").pack(fill=tk.X, pady=(0, 10))
+        tk.Frame(p1, bg="#2A2F3A", height=1).pack(fill=tk.X, pady=(0, 14))
+        self._card(p1, "Spoof").pack(fill=tk.X, pady=(0, 14))
         card = self._cards[-1]
         self._row(card, "Fake SNI (primary)", self.v_fake_sni)
         tk.Label(card, text="Bypass method — tap a card", bg=THEME["card"],
@@ -891,7 +919,7 @@ class SpooferGUI:
         tk.Label(arow, text="Auto-restart on crash", bg=THEME["card"], fg=THEME["muted"],
                  font=FONT_N).pack(side=tk.LEFT)
         ToggleSwitch(arow, self.v_autorestart).pack(side=tk.LEFT, padx=10)
-        self._card(p1, "Failover  ·  extra endpoints + SNIs").pack(fill=tk.X, pady=(0, 10))
+        self._card(p1, "Failover  ·  extra endpoints + SNIs").pack(fill=tk.X, pady=(0, 14))
         card = self._cards[-1]
         self._row(card, "Extra endpoints", None, w=40, text_var_name="extra",
                   hint="ip[:port], comma separated")
@@ -910,7 +938,7 @@ class SpooferGUI:
             ModernButton(prow, text=txt, command=cmd, style="ghost", height=30).pack(side=tk.LEFT, padx=3)
 
         p2 = self._page_frame("proxy")
-        self._card(p2, "Mode — tap a card").pack(fill=tk.X, pady=(0, 10))
+        self._card(p2, "Mode — tap a card").pack(fill=tk.X, pady=(0, 14))
         card = self._cards[-1]
         self._mode_wrap = tk.Frame(card, bg=THEME["card"])
         self._mode_wrap.pack(fill=tk.X, padx=14, pady=4)
@@ -921,7 +949,7 @@ class SpooferGUI:
                                       fg=THEME["muted"], font=("Segoe UI", 8),
                                       wraplength=640, justify=tk.LEFT)
         self.lbl_mode_hint.pack(anchor="w", padx=14, pady=(0, 8))
-        self._card(p2, "Proxy output").pack(fill=tk.X, pady=(0, 10))
+        self._card(p2, "Proxy output").pack(fill=tk.X, pady=(0, 14))
         card = self._cards[-1]
         self._row(card, "SOCKS5 port", self.v_socks, w=12)
         self._row(card, "HTTP port", self.v_http, w=12)
@@ -942,17 +970,9 @@ class SpooferGUI:
         self.lbl_busy = tk.Label(thead, text="", bg=THEME["card"], fg=THEME["accent"], font=FONT_N)
         self.lbl_busy.pack(side=tk.RIGHT)
         for txt, cmd in [
-            ("⚡  Rank endpoints (current fields)", self.smart_rank),
-            ("🚀  Rank + use fastest endpoint", self.smart_use_fastest),
-            ("📂  Rank file endpoints  ·  ip_list.txt", self.smart_rank_file),
-            ("🚀  Rank files + use fastest  ·  ip + sni lists", self.smart_use_fastest_file),
             ("📶  Ping SNIs on primary endpoint", self.smart_rank_snis),
             ("🏆  Ping SNIs + use best SNI to spoof", self.smart_use_best_sni),
             ("🔄  Reload ip_list.txt / sni_list.txt", self.smart_reload_lists),
-            ("🔍  TLS reachability test", self.smart_tls_test),
-            ("💓  Check local relay health", self.smart_health),
-            ("🧪  Engine self-test", self.smart_selftest),
-            ("📝  Fill suggested SNIs / endpoints", self.smart_fill_suggestions),
         ]:
             ModernButton(card, text=txt, command=cmd, style="ghost",
                          height=33, align="left").pack(fill=tk.X, padx=14, pady=2)
@@ -1014,13 +1034,24 @@ class SpooferGUI:
                       bg=THEME["input"], anchor="w", wraplength=560, justify=tk.LEFT,
                       cursor="hand2")
         t2.pack(anchor="w")
-        row = {"outer": outer, "dot": dot}
+        row = {"outer": outer, "inner": inner, "dot": dot, "txt": txt,
+               "t1": t1, "t2": t2}
         for w in (outer, inner, dot, txt, t1, t2):
             w.bind("<Button-1>", lambda e: on_pick())
         return row
 
     def _paint_selector_row(self, row, selected):
+        # Selected: accent border + subtle tint across the whole card.
         row["outer"].configure(bg=THEME["accent"] if selected else THEME["card_edge"])
+        inner_bg = "#1E2A36" if selected else THEME["input"]
+        try:
+            row["inner"].configure(bg=inner_bg)
+            row["txt"].configure(bg=inner_bg)
+            row["t1"].configure(bg=inner_bg)
+            row["t2"].configure(bg=inner_bg)
+            row["dot"].configure(bg=inner_bg)
+        except Exception:
+            pass
         row["dot"].configure(text="◉" if selected else "○",
                              fg=THEME["accent"] if selected else THEME["faint"])
 
@@ -1077,43 +1108,77 @@ class SpooferGUI:
 
     # -- stats + console -------------------------------------------
     def _build_stats(self, right):
-        bar = tk.Frame(right, bg="#1C2027", highlightbackground=THEME["card_edge"],
+        bar = tk.Frame(right, bg="#141922", highlightbackground=THEME["card_edge"],
                        highlightthickness=1, pady=6)
         bar.pack(fill=tk.X, pady=(10, 0))
-        self.lbl_active = tk.Label(bar, text="● Active 0", font=FONT_N, fg=THEME["accent"], bg="#1C2027")
-        self.lbl_active.pack(side=tk.LEFT, padx=12)
-        self.lbl_total = tk.Label(bar, text="Total 0", font=FONT_N, fg=THEME["fg"], bg="#1C2027")
-        self.lbl_total.pack(side=tk.LEFT, padx=12)
-        self.lbl_okfail = tk.Label(bar, text="OK 0 · Fail 0", font=FONT_N, fg=THEME["muted"], bg="#1C2027")
-        self.lbl_okfail.pack(side=tk.LEFT, padx=12)
-        self.lbl_best = tk.Label(bar, text="Best —", font=FONT_N, fg=THEME["muted"], bg="#1C2027")
-        self.lbl_best.pack(side=tk.LEFT, padx=12)
-        self.lbl_method = tk.Label(bar, text="Method —", font=FONT_N, fg=THEME["muted"], bg="#1C2027")
-        self.lbl_method.pack(side=tk.LEFT, padx=12)
-        self.lbl_up = tk.Label(bar, text="▲ 0 B", font=FONT_N, fg=THEME["success"], bg="#1C2027")
-        self.lbl_up.pack(side=tk.LEFT, padx=12)
-        self.lbl_down = tk.Label(bar, text="▼ 0 B", font=FONT_N, fg=THEME["accent"], bg="#1C2027")
-        self.lbl_down.pack(side=tk.LEFT, padx=12)
+        stats_font = ("Segoe UI Variable", 9)
+        self.lbl_active = tk.Label(bar, text="● Active 0", font=stats_font, fg=THEME["accent"], bg="#141922")
+        self.lbl_active.pack(side=tk.LEFT, padx=10)
+        self.lbl_total = tk.Label(bar, text="Total 0", font=stats_font, fg=THEME["fg"], bg="#141922")
+        self.lbl_total.pack(side=tk.LEFT, padx=10)
+        self.lbl_okfail = tk.Label(bar, text="OK 0 · Fail 0", font=stats_font, fg=THEME["muted"], bg="#141922")
+        self.lbl_okfail.pack(side=tk.LEFT, padx=10)
+        self.lbl_best = tk.Label(bar, text="Best —", font=stats_font, fg=THEME["muted"], bg="#141922")
+        self.lbl_best.pack(side=tk.LEFT, padx=10)
+        self.lbl_method = tk.Label(bar, text="Method —", font=stats_font, fg=THEME["muted"], bg="#141922")
+        self.lbl_method.pack(side=tk.LEFT, padx=10)
+        self.lbl_up = tk.Label(bar, text="▲ 0 B", font=stats_font, fg=THEME["success"], bg="#141922")
+        self.lbl_up.pack(side=tk.LEFT, padx=10)
+        self.lbl_down = tk.Label(bar, text="▼ 0 B", font=stats_font, fg=THEME["accent"], bg="#141922")
+        self.lbl_down.pack(side=tk.LEFT, padx=10)
 
     def _build_console(self, right):
         outer = tk.Frame(right, bg=THEME["card_edge"])
         outer.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        self.console_outer = outer
+        self._console_expanded = True
         box = tk.Frame(outer, bg=THEME["card"])
         box.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
         h = tk.Frame(box, bg=THEME["card"])
         h.pack(fill=tk.X, padx=12, pady=(8, 2))
         tk.Label(h, text="LIVE CONSOLE", font=("Segoe UI Semibold", 8),
                  fg=THEME["accent"], bg=THEME["card"]).pack(side=tk.LEFT)
+        self.btn_console_toggle = tk.Button(
+            h, text="\u25bc", font=("Segoe UI", 8), fg=THEME["accent"],
+            bg=THEME["card"], activebackground=THEME["card"],
+            activeforeground=THEME["accent"], relief=tk.FLAT, bd=0,
+            width=3, cursor="hand2", command=self._toggle_console)
+        self.btn_console_toggle.pack(side=tk.LEFT, padx=(6, 0))
         ModernButton(h, text="Export", command=self.export_log, style="ghost", height=26).pack(side=tk.RIGHT, padx=(6, 0))
-        ModernButton(h, text="Clear", command=self.clear_log, style="ghost", height=26).pack(side=tk.RIGHT)
-        self.console = scrolledtext.ScrolledText(box, bg="#14161B", fg=THEME["fg"],
-                                                 font=FONT_MONO, relief=tk.FLAT, wrap=tk.WORD, height=9,
+        ModernButton(h, text="Clear", command=self.clear_log, style="ghost", height=26).pack(side=tk.RIGHT, padx=(0, 6))
+        # Verbose toggle removed: console always hides routine packet notes.
+        try:
+            import tkinter.font as tkfont
+            available = set(tkfont.families())
+            if "Cascadia Code" in available:
+                mono_font = ("Cascadia Code", 10)
+            elif "JetBrains Mono" in available:
+                mono_font = ("JetBrains Mono", 10)
+            else:
+                mono_font = ("Consolas", 10)
+        except Exception:
+            mono_font = FONT_MONO
+        self.console = scrolledtext.ScrolledText(box, bg="#10131A", fg=THEME["fg"],
+                                                 font=mono_font, relief=tk.FLAT, wrap=tk.WORD, height=8,
                                                  insertbackground=THEME["accent"],
                                                  selectbackground=THEME["accent_dim"])
         self.console.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 12))
         for tag, col in (("info", THEME["accent"]), ("success", THEME["success"]),
                          ("warning", THEME["warning"]), ("error", THEME["danger"])):
             self.console.tag_config(tag, foreground=col)
+
+    def _toggle_console(self):
+        """Collapse/expand only the console text widget; header stays visible."""
+        if getattr(self, "_console_expanded", True):
+            self.console.pack_forget()
+            self.console_outer.pack_configure(expand=False, fill=tk.X)
+            self.btn_console_toggle.configure(text="\u25b6")
+            self._console_expanded = False
+        else:
+            self.console.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 12))
+            self.console_outer.pack_configure(expand=True, fill=tk.BOTH)
+            self.btn_console_toggle.configure(text="\u25bc")
+            self._console_expanded = True
 
     # -- config ----------------------------------------------------
     def _collect(self):
@@ -1289,81 +1354,6 @@ class SpooferGUI:
                 self.msg_q.put(("busy", -1))
         threading.Thread(target=wrapper, args=(), daemon=True).start()
 
-    def smart_rank(self):
-        eps = self._all_endpoints()
-        self.log("Ranking %d endpoint(s)..." % len(eps), "info")
-
-        def job():
-            ranked = smart.rank_endpoints(eps)
-            for r in ranked:
-                status = "%sms" % r["latency_ms"] if r["ok"] else "UNREACHABLE"
-                self.msg_q.put(("log", "smart", "%s:%s -> %s" % (r["ip"], r["port"], status)))
-            ok = [r for r in ranked if r["ok"]]
-            self.msg_q.put(("log", "smart",
-                            "Best: %s:%s (%sms)" % (ok[0]["ip"], ok[0]["port"], ok[0]["latency_ms"]) if ok else "No reachable endpoints!"))
-        self._run_bg(job)
-
-    def smart_use_fastest(self):
-        eps = self._all_endpoints()
-        self.log("Finding fastest endpoint...", "info")
-
-        def job():
-            ranked = smart.rank_endpoints(eps)
-            ok = [r for r in ranked if r["ok"]]
-            if not ok:
-                self.msg_q.put(("log", "smart", "No reachable endpoints."))
-                return
-            best = ok[0]
-            self.msg_q.put(("use_best", best))
-            self.msg_q.put(("log", "smart", "Using fastest: %s:%s" % (best["ip"], best["port"])))
-        self._run_bg(job)
-
-    def smart_rank_file(self):
-        eps = list(self.file_endpoints or [])
-        if not eps:
-            self.log("ip_list.txt has no usable endpoints — check the file format (IP / IP:port / CIDR).", "warning")
-            return
-        self.log("Ranking %d file endpoint(s) from ip_list.txt..." % len(eps), "info")
-
-        def job():
-            ranked = smart.rank_endpoints(eps)
-            for r in ranked:
-                status = "%sms" % r["latency_ms"] if r["ok"] else "UNREACHABLE"
-                self.msg_q.put(("log", "smart", "%s:%s -> %s" % (r["ip"], r["port"], status)))
-            ok = [r for r in ranked if r["ok"]]
-            self.msg_q.put(("log", "smart",
-                            "Best file endpoint: %s:%s (%sms)" % (ok[0]["ip"], ok[0]["port"], ok[0]["latency_ms"])
-                            if ok else "No reachable file endpoints! Edit ip_list.txt."))
-        self._run_bg(job)
-
-    def smart_use_fastest_file(self):
-        eps = list(self.file_endpoints or [])
-        if not eps:
-            self.log("ip_list.txt has no usable endpoints.", "warning")
-            return
-        snis = list(self.file_snis or [])
-        self.log("Ranking %d file endpoint(s), will keep fastest %d..." % (len(eps), MAX_FILE_ENDPOINTS), "info")
-
-        def job():
-            ranked = smart.rank_endpoints(eps)
-            ok = [r for r in ranked if r["ok"]]
-            if not ok:
-                self.msg_q.put(("log", "smart", "No reachable file endpoints."))
-                return
-            top = ok[:MAX_FILE_ENDPOINTS]
-            best = top[0]
-            extras = [{"ip": r["ip"], "port": r["port"]} for r in top[1:]]
-            self.msg_q.put(("use_best_multi", {
-                "best": best,
-                "extras": extras,
-                "snis": snis[:8],
-            }))
-            self.msg_q.put(("log", "smart",
-                            "Using fastest file endpoint: %s:%s "
-                            "(+%d failover, %d SNIs from sni_list.txt). Press SAVE/START."
-                            % (best["ip"], best["port"], len(extras), len(snis[:8]))))
-        self._run_bg(job)
-
     def smart_rank_snis(self):
         ip, port = self._primary_endpoint()
         snis = self._sni_candidates()
@@ -1437,84 +1427,6 @@ class SpooferGUI:
         except Exception:
             pass
         self.toast("Lists reloaded", "success")
-
-    def smart_tls_test(self):
-        ip, port = self._primary_endpoint()
-        sni = self.v_fake_sni.get().strip()
-        self.log("TLS test %s:%s SNI=%s ..." % (ip, port, sni), "info")
-
-        def job():
-            res = smart.tls_handshake_test(ip, port, sni)
-            if res["ok"]:
-                self.msg_q.put(("log", "smart", "TLS OK (%sms, %s)" % (res["latency_ms"], res["tls_version"])))
-            else:
-                self.msg_q.put(("log", "smart", "TLS FAILED: %s" % res["error"]))
-        self._run_bg(job)
-
-    def smart_health(self):
-        host = self.v_listen_host.get().strip() or "0.0.0.0"
-        try:
-            port = int(self.v_listen_port.get().strip())
-        except ValueError:
-            self.log("Bad listen port.", "error")
-            return
-
-        def job():
-            free = smart.is_port_free("127.0.0.1", port)
-            relay = smart.check_local_relay(host, port)
-            self.msg_q.put(("log", "smart",
-                            "Listen port %s: %s; relay: %s"
-                            % (port, "FREE (not running)" if free else "IN USE",
-                               "ACCEPTING" if relay["ok"] else "NOT ACCEPTING")))
-        self._run_bg(job)
-
-    def smart_fill_suggestions(self):
-        if not self.e_extra.get().strip():
-            if self.file_endpoints:
-                self.e_extra.delete(0, tk.END)
-                self.e_extra.insert(0, "; ".join(
-                    "%s:%s" % (e["ip"], e["port"]) for e in self.file_endpoints[:4]))
-            else:
-                self.e_extra.delete(0, tk.END)
-                self.e_extra.insert(0, "188.114.96.0:443, 104.21.0.0:443")
-        if not self.e_snis.get().strip():
-            if self.file_snis:
-                primary = self.v_fake_sni.get().strip()
-                rest = [s for s in self.file_snis if s != primary][:4]
-                self.e_snis.delete(0, tk.END)
-                self.e_snis.insert(0, ", ".join(rest or self.file_snis[:4]))
-            else:
-                self.e_snis.delete(0, tk.END)
-                self.e_snis.insert(0, "cloudflare.com, cdn.jsdelivr.net")
-        self.log("Suggestions: %d file endpoint(s), "
-                 "%d file SNI(s); built-ins=%s ..."
-                 % (len(self.file_endpoints), len(self.file_snis),
-                    ", ".join(smart.SUGGESTED_SNIS[:4])), "info")
-
-    def smart_selftest(self):
-        self.log("Running engine self-test (no Admin needed)...", "info")
-
-        def job():
-            try:
-                si = subprocess.STARTUPINFO()
-                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                si.wShowWindow = subprocess.SW_HIDE
-                kw = {"cwd": APP_DIR, "stdout": subprocess.PIPE, "stderr": subprocess.STDOUT,
-                      "text": True, "timeout": 60}
-                if sys.platform == "win32":
-                    kw.update(startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW)
-                cp = subprocess.run(backend_cmd("--self-test", "--config", CONFIG_PATH), **kw)
-                out = (cp.stdout or "").strip()[-3000:]
-                if cp.returncode == 0:
-                    self.msg_q.put(("log", "selftest", "SELF-TEST PASSED"))
-                else:
-                    self.msg_q.put(("log", "selftest", "SELF-TEST FAILED (exit %d)" % cp.returncode))
-                for line in out.splitlines()[-25:]:
-                    self.msg_q.put(("log", "selftest", line))
-            except Exception as exc:
-                self.msg_q.put(("log", "selftest", "self-test error: %s" % exc))
-
-        self._run_bg(job)
 
     # -- process control -------------------------------------------
     def _bar_show(self, show):
@@ -1593,6 +1505,14 @@ class SpooferGUI:
         self.best_method = ""
         self.method_rate = 0.0
         self.method_runs = 0
+        # Traffic tracker reset for this run.
+        self.up_bytes = 0
+        self.down_bytes = 0
+        self.up_rate = 0.0
+        self.down_rate = 0.0
+        self._prev_up = 0
+        self._prev_down = 0
+        self._prev_traffic_t = time.time()
         self._refresh_stats()
         self._update_method_hint()
         self.btn_start.config(state=tk.DISABLED)
@@ -1675,6 +1595,26 @@ class SpooferGUI:
                             if meths:
                                 self.method_rate = float(meths[0].get("rate", 0.0))
                                 self.method_runs = int(meths[0].get("ok", 0)) + int(meths[0].get("fail", 0))
+                        # --- traffic tracker: totals from backend, rates local ---
+                        try:
+                            new_up = int(obj.get("up_bytes", self.up_bytes) or 0)
+                            new_down = int(obj.get("down_bytes", self.down_bytes) or 0)
+                        except (TypeError, ValueError):
+                            new_up, new_down = self.up_bytes, self.down_bytes
+                        now = time.time()
+                        if self._prev_traffic_t:
+                            dt = now - self._prev_traffic_t
+                            if dt >= 0.5:
+                                # Guard against backend restart (counters reset).
+                                if new_up >= self._prev_up and new_down >= self._prev_down and dt > 0:
+                                    self.up_rate = (new_up - self._prev_up) / dt
+                                    self.down_rate = (new_down - self._prev_down) / dt
+                                self._prev_up, self._prev_down = new_up, new_down
+                                self._prev_traffic_t = now
+                        else:
+                            self._prev_up, self._prev_down = new_up, new_down
+                            self._prev_traffic_t = now
+                        self.up_bytes, self.down_bytes = new_up, new_down
                     except Exception:
                         pass
                     self._refresh_stats()
@@ -1684,43 +1624,6 @@ class SpooferGUI:
                         self.busy_jobs = max(0, self.busy_jobs + int(msg[1]))
                     except Exception:
                         pass
-                elif kind == "use_best":
-                    _, best = msg
-                    self.v_endpoint_ip.set(best["ip"])
-                    self.v_endpoint_port.set(str(best["port"]))
-                    self._append("Primary endpoint set to %s:%s" % (best["ip"], best["port"]), "success")
-                    self.toast("Fastest endpoint applied", "success")
-                elif kind == "use_best_multi":
-                    _, payload = msg
-                    best = payload.get("best", {})
-                    extras = payload.get("extras", []) or []
-                    snis = payload.get("snis", []) or []
-                    if best.get("ip"):
-                        self.v_endpoint_ip.set(best["ip"])
-                        self.v_endpoint_port.set(str(best.get("port", 443)))
-                    try:
-                        self.e_extra.delete(0, tk.END)
-                        self.e_extra.insert(0, "; ".join(
-                            "%s:%s" % (e["ip"], e["port"]) for e in extras[: MAX_FILE_ENDPOINTS - 1]))
-                    except Exception:
-                        pass
-                    try:
-                        if snis:
-                            primary = self.v_fake_sni.get().strip()
-                            if primary not in snis:
-                                self.v_fake_sni.set(snis[0])
-                                rest = snis[1:5]
-                            else:
-                                rest = [s for s in snis if s != primary][:4]
-                            self.e_snis.delete(0, tk.END)
-                            self.e_snis.insert(0, ", ".join(rest))
-                    except Exception:
-                        pass
-                    self._append("Primary endpoint set to %s:%s "
-                                 "(+%d failover from ip_list.txt, %d SNIs from sni_list.txt)"
-                                 % (best.get("ip"), best.get("port"), len(extras), len(snis)),
-                                 "success")
-                    self.toast("Fastest file endpoint applied", "success")
                 elif kind == "use_best_sni":
                     _, best = msg
                     sni = str(best.get("sni", "") or "").strip()
@@ -1734,6 +1637,14 @@ class SpooferGUI:
                     low = line.lower()
                     if "server started on" in low and tag == "injector":
                         self._bar_show(False)
+                    # Console always hides routine injector packet chatter
+                    # (total silence). Smart-tool, gui and error lines pass.
+                    if tag == "injector" and _is_routine_injector_line(line):
+                        # Still surface WinDivert failures that hide in routine flow.
+                        if tag == "injector" and ("windivert" in low or "access is denied" in low):
+                            self._append("[gui] WinDivert failed — run GUI as Administrator "
+                                         "(RUN AS ADMIN) and press START again.", "error")
+                        continue
                     if "error" in low or "fatal" in low or "traceback" in low:
                         lvl = "error"
                     elif "warn" in low:
@@ -1769,6 +1680,15 @@ class SpooferGUI:
             self.lbl_method.config(text="Method %s · %.0f%% (%d)" % (self.best_method, self.method_rate * 100.0, runs))
         else:
             self.lbl_method.config(text="Method —")
+        # Traffic tracker: totals + live rates.
+        try:
+            self.lbl_up.config(text="▲ %s (%s/s)" % (fmt_bytes(self.up_bytes), fmt_bytes(self.up_rate)))
+        except Exception:
+            pass
+        try:
+            self.lbl_down.config(text="▼ %s (%s/s)" % (fmt_bytes(self.down_bytes), fmt_bytes(self.down_rate)))
+        except Exception:
+            pass
 
     def _update_method_hint(self):
         """Live scoreboard hint under the method cards."""
@@ -1828,6 +1748,13 @@ class SpooferGUI:
         self._set_status(False)
         self._bar_show(False)
         self.lbl_uptime.config(text="--:--")
+        # Session summary: traffic totals.
+        try:
+            self._append("Session traffic: ▲ %s up · ▼ %s down "
+                         "(OK %d · Fail %d)." % (fmt_bytes(self.up_bytes), fmt_bytes(self.down_bytes),
+                                                 self.success_conns, self.failed_conns), "info")
+        except Exception:
+            pass
         self.log("Stopped.", "warning")
         self.toast("Engine stopped", "warning")
 
@@ -1849,11 +1776,19 @@ class SpooferGUI:
     # -- misc UI ---------------------------------------------------
     def _set_status(self, on: bool):
         if on:
-            self.status_dot.config(fg=THEME["success"])
-            self.status_lbl.config(text="ACTIVE", fg=THEME["success"])
+            self.status_dot.config(fg="#3DDC84")
+            self.status_lbl.config(text="ACTIVE", fg="#3DDC84", font=FONT_STATUS)
+            try:
+                self.status_pill.config(highlightbackground="#3DDC84")
+            except Exception:
+                pass
         else:
-            self.status_dot.config(fg=THEME["faint"])
-            self.status_lbl.config(text="INACTIVE", fg=THEME["muted"])
+            self.status_dot.config(fg="#5C6575")
+            self.status_lbl.config(text="INACTIVE", fg=THEME["muted"], font=FONT_STATUS)
+            try:
+                self.status_pill.config(highlightbackground=THEME["card_edge"])
+            except Exception:
+                pass
 
     def log(self, text: str, level: str = "info"):
         self.msg_q.put(("log", "gui", text))

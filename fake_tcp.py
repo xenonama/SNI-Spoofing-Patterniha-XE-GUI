@@ -88,7 +88,8 @@ class FakeTcpInjector(TcpInjector):
         except Exception:
             pass
 
-    def _close_conn(self, connection: FakeInjectiveConnection, msg: str, counted: bool):
+    def _close_conn(self, connection: FakeInjectiveConnection, msg: str, counted: bool,
+                     quiet: bool = False):
         try:
             connection.sock.close()
         except Exception:
@@ -106,7 +107,13 @@ class FakeTcpInjector(TcpInjector):
             connection.running_loop.call_soon_threadsafe(connection.t2a_event.set)
         except Exception:
             pass
-        self._emit("warning", f"{msg} {connection.id}")
+        # Routine bypass failures happen per connection (esp. on strict DPI)
+        # and would flood the GUI console — keep them at debug level.
+        # Real errors (unsupported method, send failures) still print.
+        if quiet:
+            log.debug("%s %s", msg, connection.id)
+        else:
+            self._emit("warning", f"{msg} {connection.id}")
 
     def fake_send_thread(self, packet: Packet, connection: FakeInjectiveConnection):
         time.sleep(self.fake_delay)
@@ -184,7 +191,9 @@ class FakeTcpInjector(TcpInjector):
 
     def on_unexpected_packet(self, packet: Packet, connection: FakeInjectiveConnection, info_m: str):
         try:
-            self._close_conn(connection, info_m, True)
+            # quiet=True: routine DPI mismatch — stats already count it,
+            # no need to spam the live console with one line per failure.
+            self._close_conn(connection, info_m, True, quiet=True)
         finally:
             try:
                 self.w.send(packet, False)

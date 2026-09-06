@@ -91,4 +91,4 @@ GUI extras live in `config.json.full.json`; `xray_config.json` is regenerated on
 ## Credits
 
 Original: Patterniha · t.me/patterniha · t.me/projectXhttp
-GUI modernization: Xenon using AI · v2 hardening: this upgrade.
+GUI modernization: Xenon using DeepSeek AI · v2 hardening: this upgrade.

@@ -15,26 +15,6 @@
     {
       "ip": "188.114.96.4",
       "port": 443
-    },
-    {
-      "ip": "108.162.192.1",
-      "port": 443
-    },
-    {
-      "ip": "104.16.0.2",
-      "port": 443
-    },
-    {
-      "ip": "104.24.0.1",
-      "port": 443
-    },
-    {
-      "ip": "104.16.0.1",
-      "port": 443
-    },
-    {
-      "ip": "104.24.0.4",
-      "port": 443
     }
   ],
   "FAKE_SNI": "directus.io",
@@ -42,8 +22,7 @@
     "directus.io",
     "storyblok.com",
     "builder.io",
-    "strapi.io",
-    "ghost.org"
+    "strapi.io"
   ],
   "BYPASS_METHOD": "split_seq",
   "HANDSHAKE_TIMEOUT": 2.0,
