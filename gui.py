@@ -94,6 +94,9 @@ THEME = {
     "selector_hover": "#232A36",
     "btn_hover": "#252B36",
     "btn_press": "#22262E",
+    "btn_border": "#343B49",
+    "btn_shadow": "#04060A",
+    "glow": "#4FC3F7",
 }
 
 # Modern font stack with graceful fallback (Win10/Win11, Python 3.8+).
@@ -310,8 +313,38 @@ def _round_rect(canvas: tk.Canvas, x1, y1, x2, y2, r, **kw):
     return canvas.create_polygon(pts, smooth=True, **kw)
 
 
+def _hex_to_rgb(h: str) -> tuple:
+    """'#RRGGBB' -> (r, g, b). Falls back to mid-gray on bad input."""
+    try:
+        h = str(h).strip().lstrip("#")
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    except Exception:
+        return (128, 128, 128)
+
+
+def _rgb_to_hex(rgb: tuple) -> str:
+    try:
+        r, g, b = (max(0, min(255, int(v))) for v in rgb)
+        return "#%02X%02X%02X" % (r, g, b)
+    except Exception:
+        return "#808080"
+
+
+def _mix_hex(a: str, b: str, t: float) -> str:
+    """Linear blend of two hex colors. t=0 -> a, t=1 -> b."""
+    try:
+        t = max(0.0, min(1.0, float(t)))
+    except Exception:
+        t = 1.0
+    ar, ag, ab = _hex_to_rgb(a)
+    br, bg, bb = _hex_to_rgb(b)
+    return _rgb_to_hex((ar + (br - ar) * t, ag + (bg - ag) * t, ab + (bb - ab) * t))
+
+
 class ModernButton(tk.Canvas):
-    """Rounded button with hover/press tween + disabled state.
+    """Rounded button with border, shadow, tweened hover/press + disabled state.
 
     Compatible subset: .config(state=...), .pack/.grid/.place as usual.
     """
@@ -322,11 +355,23 @@ class ModernButton(tk.Canvas):
         "ghost": (THEME["card"], THEME["btn_hover"], THEME["btn_press"], THEME["fg"]),
         "accent": ("#1F6F9B", "#2A86B8", "#185A7D", "#FFFFFF"),
     }
+    # Per-style 1px edge color for the resting state (subtle premium border).
+    BORDERS = {
+        "primary": "#5AB4EE",
+        "danger": "#F2847E",
+        "ghost": THEME["btn_border"],
+        "accent": "#3FA9D6",
+    }
 
     def __init__(self, parent, text="", command=None, style="ghost", height=34,
-                 font=FONT_BTN, align="center", radius=9):
+                 font=FONT_BTN, align="center", radius=9, focusable=True):
         super().__init__(parent, height=height, bg=THEME["card"] if style == "ghost" else THEME["bg"],
                          highlightthickness=0, bd=0, cursor="hand2")
+        try:
+            self.configure(takefocus=1 if focusable else 0)
+        except Exception:
+            pass
+        self._focusable = bool(focusable)
         self._text = text
         self._command = command
         self._style = style
@@ -336,7 +381,11 @@ class ModernButton(tk.Canvas):
         self._enabled = True
         self._hover = False
         self._press = False
+        self._focused = False
         self._fill = self.STYLES[style][0]
+        # Displayed fill animates toward the target for a smooth hover fade.
+        self._disp_fill = self.STYLES[style][0]
+        self._tween_id = None
         self._body = None
         self._label = None
         self.bind("<Configure>", lambda e: self._draw())
@@ -344,7 +393,48 @@ class ModernButton(tk.Canvas):
         self.bind("<Leave>", self._on_leave)
         self.bind("<ButtonPress-1>", self._on_press)
         self.bind("<ButtonRelease-1>", self._on_release)
+        try:
+            self.bind("<FocusIn>", lambda e: self._on_focus(True))
+            self.bind("<FocusOut>", lambda e: self._on_focus(False))
+            self.bind("<Return>", lambda e: self._keyboard_activate())
+            self.bind("<space>", lambda e: self._keyboard_activate())
+            self.bind("<Destroy>", lambda e: self._cancel_tween(), add="+")
+        except Exception:
+            pass
         self._draw()
+
+    def set_style(self, style: str, animate: bool = False):
+        """Switch style cleanly: snap tween state + redraw. Never raises."""
+        try:
+            if style not in self.STYLES:
+                return
+            if style == getattr(self, "_style", None):
+                self._draw()
+                return
+            self._style = style
+            self._cancel_tween()
+            try:
+                self._disp_fill = self.STYLES[style][0]
+                self._fill = self._disp_fill
+            except Exception:
+                pass
+            if animate and self._enabled:
+                self._refresh(animate=True)
+            else:
+                self._draw()
+        except Exception:
+            pass
+
+    def _cancel_tween(self):
+        try:
+            if getattr(self, "_tween_id", None) is not None:
+                try:
+                    self.after_cancel(self._tween_id)
+                except Exception:
+                    pass
+                self._tween_id = None
+        except Exception:
+            pass
 
     # -- compat ------------------------------------------------------
     def config(self, **kw):
@@ -352,7 +442,9 @@ class ModernButton(tk.Canvas):
             st = kw.pop("state")
             self._enabled = (st == tk.NORMAL)
             self.configure(cursor="hand2" if self._enabled else "arrow")
-            self._draw()
+            # Snap fill on enable/disable to avoid a grey flash; hover fades
+            # resume via tween on the next enter/leave.
+            self._refresh(animate=False)
         if "text" in kw:
             self._text = kw.pop("text")
             self._draw()
@@ -377,60 +469,216 @@ class ModernButton(tk.Canvas):
             return hov, fg
         return base, fg
 
+    def _border_color(self):
+        if not self._enabled:
+            return THEME["card_edge"]
+        if self._focused or self._hover:
+            if self._style == "primary":
+                return "#7CC6F5"
+            if self._style == "danger":
+                return "#F5A09B"
+            if self._style == "accent":
+                return THEME["accent"]
+            return "#4A5263"
+        return self.BORDERS.get(self._style, THEME["btn_border"])
+
     def _draw(self):
-        w = max(2, self.winfo_width())
+        try:
+            ww = self.winfo_width()
+        except Exception:
+            return
+        # Pre-layout: canvas not yet sized — defer instead of drawing a
+        # degenerate 2px shape that flashes/flickers in the sidebar.
+        if ww < 10:
+            try:
+                self.after(15, lambda: self._draw() if self.winfo_exists() else None)
+            except Exception:
+                pass
+            return
+        w = max(2, ww)
         h = max(2, self.winfo_height())
-        fill, fg = self._colors()
+        _fill_target, fg = self._colors()
+        # Use the tweened fill so hover fades smoothly; snap on first draw
+        # or when disabled to avoid a grey flash.
+        try:
+            fill = self._disp_fill if self._enabled else _fill_target
+        except Exception:
+            fill = _fill_target
+        border = self._border_color()
         self.delete("all")
         bg = self.cget("bg")
-        self._body = _round_rect(self, 1, 1, w - 1, h - 1, self._radius,
-                                 fill=fill, outline="")
-        # subtle top highlight for depth
-        self.create_line(8, 2, w - 8, 2, fill="#FFFFFF", stipple="gray25")
+        # Soft drop shadow fully inside the canvas so nothing peeks above
+        # the button (previous dy=+2 box was clipped and read as a line).
+        if self._enabled:
+            try:
+                _round_rect(self, 1, 2, w - 1, h - 1, self._radius,
+                            fill=THEME["btn_shadow"], outline="")
+            except Exception:
+                pass
+        self._body = _round_rect(self, 1, 1, w - 1, h - 1,
+                                 self._radius, fill=fill, outline=border)
+        # Single solid inner sheen (no stipple: stippled lines render as
+        # dotted "-----" dashes on Windows). Inset by radius so it never
+        # touches the rounded corners, skipped on tiny/pre-layout sizes.
+        try:
+            if self._enabled and w >= 60 and h >= 20:
+                sheen = _mix_hex(fill, "#FFFFFF", 0.10)
+                x0 = min(max(self._radius + 2, 10), w // 2)
+                x1 = max(min(w - self._radius - 2, w - 10), w // 2)
+                if x1 > x0:
+                    self.create_line(x0, 2, x1, 2, fill=sheen)
+        except Exception:
+            pass
+        # Keyboard focus ring (sidebar buttons opt out via focusable=False).
+        if self._focused and self._enabled and getattr(self, "_focusable", True):
+            try:
+                _round_rect(self, 0, 0, w, h - 1, self._radius + 1,
+                            fill="", outline=THEME["accent"])
+            except Exception:
+                pass
         anchor = "w" if self._align == "left" else "center"
         x = 14 if self._align == "left" else w / 2
-        self._label = self.create_text(x, h / 2, text=self._text, font=self._font,
+        # 1px pressed dip for tactile click feel.
+        try:
+            y = h / 2 + (1 if self._press else 0)
+        except Exception:
+            y = h / 2
+        self._label = self.create_text(x, y, text=self._text, font=self._font,
                                        fill=fg, anchor=anchor)
         self.configure(bg=bg)
+
+    def _tween_to(self, target: str, steps: int = 5, delay: int = 12):
+        """Animate displayed fill toward target hex color."""
+        try:
+            if self._tween_id is not None:
+                try:
+                    self.after_cancel(self._tween_id)
+                except Exception:
+                    pass
+                self._tween_id = None
+        except Exception:
+            pass
+        try:
+            start = self._disp_fill
+        except Exception:
+            start = target
+        if start == target or not self._enabled:
+            try:
+                self._disp_fill = target
+            except Exception:
+                pass
+            self._draw()
+            return
+
+        def _step(i: int = 1):
+            try:
+                if not self.winfo_exists():
+                    return
+                self._disp_fill = _mix_hex(start, target, i / max(1, steps))
+                self._draw()
+                if i < steps:
+                    self._tween_id = self.after(delay, lambda: _step(i + 1))
+                else:
+                    self._tween_id = None
+            except Exception:
+                try:
+                    self._tween_id = None
+                except Exception:
+                    pass
+        _step(1)
+
+    def _refresh(self, animate: bool = True):
+        try:
+            target = self._colors()[0]
+        except Exception:
+            self._draw()
+            return
+        if animate and self._enabled:
+            self._tween_to(target)
+        else:
+            self._cancel_tween()
+            try:
+                self._disp_fill = target
+            except Exception:
+                pass
+            self._draw()
 
     def _on_enter(self, e):
         if not self._enabled:
             return
         self._hover = True
-        self._draw()
+        self._refresh(animate=True)
 
     def _on_leave(self, e):
         self._hover = False
         self._press = False
-        self._draw()
+        self._refresh(animate=True)
 
     def _on_press(self, e):
         if not self._enabled:
             return
+        if getattr(self, "_focusable", True):
+            try:
+                self.focus_set()
+            except Exception:
+                pass
         self._press = True
-        self._draw()
+        self._refresh(animate=False)
 
     def _on_release(self, e):
         was = self._press
         self._press = False
-        self._draw()
+        self._refresh(animate=True)
         if was and self._enabled and self._command:
             # click animation: quick dip then fire
             self.after(40, lambda: self._command() if self._enabled else None)
 
+    def _on_focus(self, focused: bool):
+        if not getattr(self, "_focusable", True):
+            self._focused = False
+            return
+        self._focused = bool(focused)
+        self._draw()
+
+    def _keyboard_activate(self):
+        if not self._enabled or not self._command:
+            return
+        if not getattr(self, "_focusable", True):
+            return
+        self._press = True
+        self._draw()
+        self.after(80, self._fire_from_keyboard)
+
+    def _fire_from_keyboard(self):
+        self._press = False
+        self._draw()
+        try:
+            if self._enabled and self._command:
+                self._command()
+        except Exception:
+            pass
+
 
 class ToggleSwitch(tk.Canvas):
-    """iOS-style toggle bound to a BooleanVar."""
+    """iOS-style toggle with sliding knob + hover sheen."""
 
     def __init__(self, parent, variable, width=44, height=24):
         super().__init__(parent, width=width, height=height,
                          bg=THEME["card"], highlightthickness=0, bd=0, cursor="hand2")
         self.var = variable
         self._tw, self._th = width, height
+        self._hover = False
+        self._knob = None  # animated knob center-x; None = snap on next draw
+        self._anim_id = None
         self.bind("<Button-1>", lambda e: self.toggle())
+        try:
+            self.bind("<Enter>", lambda e: self._set_hover(True))
+            self.bind("<Leave>", lambda e: self._set_hover(False))
+        except Exception:
+            pass
         self._draw()
         try:
-            self.var.trace_add("write", lambda *a: self._draw())
+            self.var.trace_add("write", lambda *a: self._animate())
         except Exception:
             pass
 
@@ -439,17 +687,90 @@ class ToggleSwitch(tk.Canvas):
             self.var.set(not self.var.get())
         except Exception:
             pass
+        self._animate()
+
+    def _set_hover(self, on: bool):
+        self._hover = bool(on)
         self._draw()
+
+    def _target_x(self) -> float:
+        try:
+            on = bool(self.var.get())
+        except Exception:
+            on = False
+        _w, _h, r = self._tw, self._th, self._th / 2
+        return (_w - r - 2) if on else (r + 2)
+
+    def _animate(self, steps: int = 6, delay: int = 12):
+        try:
+            if self._anim_id is not None:
+                try:
+                    self.after_cancel(self._anim_id)
+                except Exception:
+                    pass
+                self._anim_id = None
+        except Exception:
+            pass
+        try:
+            target = self._target_x()
+            start = self._knob if self._knob is not None else target
+        except Exception:
+            self._draw()
+            return
+        if abs(start - target) < 0.5:
+            self._knob = target
+            self._draw()
+            return
+
+        def _step(i: int = 1):
+            try:
+                if not self.winfo_exists():
+                    return
+                t = i / max(1, steps)
+                self._knob = start + (target - start) * t
+                self._draw()
+                if i < steps:
+                    self._anim_id = self.after(delay, lambda: _step(i + 1))
+                else:
+                    self._anim_id = None
+            except Exception:
+                try:
+                    self._anim_id = None
+                except Exception:
+                    pass
+        _step(1)
 
     def _draw(self):
         self.delete("all")
-        on = bool(self.var.get())
+        try:
+            on = bool(self.var.get())
+        except Exception:
+            on = False
         w, h, r = self._tw, self._th, self._th / 2
-        track = THEME["primary"] if on else THEME["toggle_off"]
-        _round_rect(self, 1, 1, w - 1, h - 1, r, fill=track, outline="")
-        knob_x = w - r - 2 if on else r + 2
+        base = THEME["primary"] if on else THEME["toggle_off"]
+        # Hover sheen: subtly lighten the track.
+        track = _mix_hex(base, "#FFFFFF", 0.12) if (self._hover and on) else \
+            (_mix_hex(base, "#FFFFFF", 0.10) if self._hover else base)
+        # Track border for definition on dark cards.
+        _round_rect(self, 1, 1, w - 1, h - 1, r, fill=track, outline=THEME["btn_border"])
+        # Inner top sheen.
+        try:
+            self.create_line(8, 2, w - 8, 2, fill="#FFFFFF", stipple="gray12")
+        except Exception:
+            pass
+        if self._knob is None:
+            knob_x = self._target_x()
+            self._knob = knob_x
+        else:
+            knob_x = self._knob
+        # Knob shadow + bright knob.
+        try:
+            self.create_oval(knob_x - (r - 3), 4, knob_x + (r - 3), h - 2,
+                             fill=THEME["btn_shadow"], outline="", stipple="gray50")
+        except Exception:
+            pass
         self.create_oval(knob_x - (r - 3), 3, knob_x + (r - 3), h - 3,
-                         fill="#FFFFFF", outline="")
+                         fill="#FFFFFF", outline="#C9D2DE")
 
 
 SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -792,7 +1113,7 @@ class SpooferGUI:
                            ("proxy", "🌐   Proxy / Xray"),
                            ("tools", "🛠   Smart Tools")):
             b = ModernButton(side, text=label, command=lambda k=key: self._show_page(k),
-                             style="ghost", height=42, align="left")
+                             style="ghost", height=42, align="left", focusable=False)
             b.configure(bg=THEME["sidebar"])
             b.pack(fill=tk.X, padx=10, pady=3)
             self._nav_buttons[key] = b
@@ -800,18 +1121,18 @@ class SpooferGUI:
         tk.Label(side, text="ENGINE", font=("Segoe UI Semibold", 8), fg=THEME["faint"],
                  bg=THEME["sidebar"]).pack(anchor="w", padx=16, pady=(0, 6))
         self.btn_start = ModernButton(side, text="▶   START", command=self.start,
-                                       style="primary", height=44)
+                                       style="primary", height=44, focusable=False)
         self.btn_start.configure(bg=THEME["sidebar"])
         self.btn_start.pack(fill=tk.X, padx=10, pady=3)
         self.btn_stop = ModernButton(side, text="⏹   STOP", command=self.stop,
-                                     style="danger", height=40)
+                                     style="danger", height=40, focusable=False)
         self.btn_stop.configure(bg=THEME["sidebar"])
         self.btn_stop.pack(fill=tk.X, padx=10, pady=3)
         self.btn_stop.config(state=tk.DISABLED)
         for txt, cmd in (("⧉  Copy proxy", self.copy_proxy),
                          ("⬆  Run as admin", lambda: relaunch_as_admin(os.path.abspath(__file__))),
                          ("💾  Save config", self.save_only)):
-            b = ModernButton(side, text=txt, command=cmd, style="ghost", height=32)
+            b = ModernButton(side, text=txt, command=cmd, style="ghost", height=32, focusable=False)
             b.configure(bg=THEME["sidebar"])
             b.pack(fill=tk.X, padx=10, pady=2)
 
@@ -882,10 +1203,16 @@ class SpooferGUI:
             self._page_canvases[name].yview_moveto(0)
         except Exception:
             pass
-        # refresh nav highlight
+        # refresh nav highlight (clean style switch keeps fill/border in sync)
         for k, b in self._nav_buttons.items():
-            b._style = "accent" if k == name else "ghost"
-            b._draw()
+            try:
+                b.set_style("accent" if k == name else "ghost", animate=False)
+            except Exception:
+                try:
+                    b._style = "accent" if k == name else "ghost"
+                    b._draw()
+                except Exception:
+                    pass
         self._slide_indicator(name)
         if animate:
             self._slide_page_in(pg)
@@ -894,9 +1221,21 @@ class SpooferGUI:
 
     def _slide_indicator(self, name, step=0, force=False):
         try:
-            target = self._nav_buttons[name].winfo_y()
+            btn = self._nav_buttons[name]
         except Exception:
             return
+        try:
+            target = btn.winfo_y()
+        except Exception:
+            return
+        # Pre-layout: button not yet placed (y==0 with zero height) — skip
+        # the animated glide so the rail never flashes at the top.
+        if not force:
+            try:
+                if target <= 1 and btn.winfo_height() < 5:
+                    return
+            except Exception:
+                pass
         if force:
             try:
                 self.nav_ind.place(x=0, y=target)
@@ -1090,13 +1429,22 @@ class SpooferGUI:
 
         def _hover_in(e=None, _row=row):
             try:
-                for k in ("inner", "txt", "t1", "t2", "dot"):
-                    _row[k].configure(bg=THEME["selector_hover"])
+                _row["_hover"] = True
+                if _row.get("_selected"):
+                    # Selected + hover: keep tint, brighten border.
+                    _row["outer"].configure(bg=THEME["accent"])
+                    for k in ("inner", "txt", "t1", "t2", "dot"):
+                        _row[k].configure(bg=_mix_hex(THEME["selector_selected"], "#FFFFFF", 0.06))
+                else:
+                    _row["outer"].configure(bg="#3A4252")
+                    for k in ("inner", "txt", "t1", "t2", "dot"):
+                        _row[k].configure(bg=THEME["selector_hover"])
             except Exception:
                 pass
 
         def _hover_out(e=None, _row=row):
             try:
+                _row["_hover"] = False
                 self._paint_selector_row(_row, _row.get("_selected", False))
             except Exception:
                 pass
@@ -1110,23 +1458,36 @@ class SpooferGUI:
         return row
 
     def _paint_selector_row(self, row, selected):
-        # Selected: accent border + subtle tint across the whole card.
+        # Selected: accent border + tinted body + glowing dot; hover adds sheen.
         try:
             row["_selected"] = bool(selected)
         except Exception:
             pass
-        row["outer"].configure(bg=THEME["accent"] if selected else THEME["card_edge"])
-        inner_bg = THEME["selector_selected"] if selected else THEME["input"]
+        hovered = bool(row.get("_hover"))
+        try:
+            outer_bg = THEME["accent"] if selected else ("#3A4252" if hovered else THEME["card_edge"])
+            row["outer"].configure(bg=outer_bg)
+        except Exception:
+            pass
+        if selected:
+            inner_bg = _mix_hex(THEME["selector_selected"], "#FFFFFF", 0.06) if hovered \
+                else THEME["selector_selected"]
+        else:
+            inner_bg = THEME["selector_hover"] if hovered else THEME["input"]
         try:
             row["inner"].configure(bg=inner_bg)
             row["txt"].configure(bg=inner_bg)
             row["t1"].configure(bg=inner_bg)
-            row["t2"].configure(bg=inner_bg)
+            row["t2"].configure(bg=inner_bg, fg=THEME["muted"] if not selected else "#C6D3E2")
             row["dot"].configure(bg=inner_bg)
         except Exception:
             pass
         row["dot"].configure(text="◉" if selected else "○",
                              fg=THEME["accent"] if selected else THEME["faint"])
+        try:
+            row["t1"].configure(fg="#FFFFFF" if selected else THEME["fg"])
+        except Exception:
+            pass
 
     def _refresh_method_ui(self):
         rows = getattr(self, "_method_rows", None)
