@@ -1,11 +1,31 @@
 {
   "LISTEN_HOST": "0.0.0.0",
   "LISTEN_PORT": 40443,
-  "CONNECT_IP": "104.19.229.21",
+  "CONNECT_IP": "108.162.192.2",
   "CONNECT_PORT": 443,
   "ENDPOINTS": [
     {
-      "ip": "104.19.229.21",
+      "ip": "108.162.192.2",
+      "port": 443
+    },
+    {
+      "ip": "108.162.192.3",
+      "port": 443
+    },
+    {
+      "ip": "188.114.96.4",
+      "port": 443
+    },
+    {
+      "ip": "108.162.192.1",
+      "port": 443
+    },
+    {
+      "ip": "104.16.0.2",
+      "port": 443
+    },
+    {
+      "ip": "104.24.0.1",
       "port": 443
     },
     {
@@ -13,16 +33,17 @@
       "port": 443
     },
     {
-      "ip": "104.16.0.2",
+      "ip": "104.24.0.4",
       "port": 443
     }
   ],
-  "FAKE_SNI": "hcaptcha.com",
+  "FAKE_SNI": "directus.io",
   "FAKE_SNIS": [
-    "hcaptcha.com",
     "directus.io",
     "storyblok.com",
-    "builder.io"
+    "builder.io",
+    "strapi.io",
+    "ghost.org"
   ],
   "BYPASS_METHOD": "split_seq",
   "HANDSHAKE_TIMEOUT": 2.0,

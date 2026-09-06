@@ -15,8 +15,9 @@ import traceback
 
 from utils.network_tools import get_default_interface_ipv4
 from utils.packet_templates import ClientHelloMaker
-from fake_tcp import FakeInjectiveConnection, FakeTcpInjector, SUPPORTED_METHODS
+from fake_tcp import FakeInjectiveConnection, FakeTcpInjector, SUPPORTED_METHODS, REAL_METHODS
 from monitor_connection import reset_stats, get_snapshot, increment_failed, finish_failed, record_result
+from monitor_connection import add_traffic
 
 log = logging.getLogger("main")
 
@@ -85,11 +86,15 @@ def run_self_test(config_path: str) -> int:
 
     def _smart():
         from utils import smart, config_manager
+        from fake_tcp import resolve_method
         assert isinstance(smart.SUGGESTED_SNIS, list) and len(smart.SUGGESTED_SNIS) > 3
         assert config_manager.validate(config_manager.migrate({})) == []
         bad = {"CONNECT_IP": "", "CONNECT_PORT": 443, "ENDPOINTS": [],
                "FAKE_SNI": "", "FAKE_SNIS": []}
         assert config_manager.validate(config_manager.migrate(bad)) != []
+        assert config_manager.validate(config_manager.migrate({"BYPASS_METHOD": "auto"})) == []
+        assert resolve_method("auto") in REAL_METHODS
+        assert resolve_method("split_seq") == "split_seq"
         # split_seq re-checks monitor mid-send while holding the per-conn
         # lock (fake_tcp) — the lock must be re-entrant or split deadlocks.
         import socket as _sock
@@ -148,7 +153,7 @@ def load_config(path: str) -> dict:
     if not fake_snis:
         raise ValueError("No FAKE_SNI configured")
 
-    method = str(cfg.get("BYPASS_METHOD", "wrong_seq")).strip()
+    method = str(cfg.get("BYPASS_METHOD", "auto")).strip() or "auto"
     if method not in SUPPORTED_METHODS:
         raise ValueError(f"Unsupported BYPASS_METHOD={method!r} (expected one of {SUPPORTED_METHODS})")
 
@@ -240,7 +245,11 @@ def note_fail(conn, endpoint: str, sni: str):
     on_unexpected_packet), only the scoreboard needs updating. Otherwise
     the engine owns the failure counter.
     """
-    record_result(endpoint, sni, False)
+    try:
+        method = getattr(conn, "bypass_method", "") or ""
+    except Exception:
+        method = ""
+    record_result(endpoint, sni, False, method=method)
     try:
         if conn is not None and getattr(conn, "counted", False):
             conn.monitor = False
@@ -278,7 +287,8 @@ def set_keepalive(sock: socket.socket):
 
 
 async def relay_main_loop(sock_1: socket.socket, sock_2: socket.socket, peer_task: asyncio.Task,
-                          first_prefix_data: bytes):
+                           first_prefix_data: bytes, direction: str = ""):
+    """Forward sock_1 -> sock_2. direction 'up' (clients->net) / 'down' feeds the traffic tracker."""
     loop = asyncio.get_running_loop()
     try:
         while True:
@@ -289,6 +299,10 @@ async def relay_main_loop(sock_1: socket.socket, sock_2: socket.socket, peer_tas
                 if first_prefix_data:
                     data = first_prefix_data + data
                     first_prefix_data = b""
+                if direction == "up":
+                    add_traffic(up=len(data))
+                elif direction == "down":
+                    add_traffic(down=len(data))
                 await loop.sock_sendall(sock_2, data)
             except (ConnectionError, OSError):
                 break
@@ -408,7 +422,8 @@ async def handle(incoming_sock: socket.socket, incoming_remote_addr):
                     pass
                 return
             else:
-                record_result(cur_ep_key or ep_key(first), sni_str, True)
+                record_result(cur_ep_key or ep_key(first), sni_str, True,
+                              method=getattr(conn, "bypass_method", "") or "")
         else:
             log.error("unknown bypass method: %s", BYPASS_METHOD)
             conn.monitor = False
@@ -421,8 +436,8 @@ async def handle(incoming_sock: socket.socket, incoming_remote_addr):
         conn.monitor = False
         fake_injective_connections.pop(conn.id, None)
 
-        oti_task = asyncio.create_task(relay_main_loop(outgoing_sock, incoming_sock, asyncio.current_task(), b""))
-        await relay_main_loop(incoming_sock, outgoing_sock, oti_task, b"")
+        oti_task = asyncio.create_task(relay_main_loop(outgoing_sock, incoming_sock, asyncio.current_task(), b"", "down"))
+        await relay_main_loop(incoming_sock, outgoing_sock, oti_task, b"", "up")
     except Exception:
         log.error("handle error", exc_info=True)
         try:
@@ -475,6 +490,8 @@ async def main():
     print(f"Fake SNIs: {', '.join(FAKE_SNIS)}", flush=True)
     print(f"Endpoints: {', '.join(e['ip'] + ':' + str(e['port']) for e in ENDPOINTS)}", flush=True)
     print(f"Bypass method: {BYPASS_METHOD} (timeout={HANDSHAKE_TIMEOUT}s, max_conn={MAX_CONNECTIONS})", flush=True)
+    if BYPASS_METHOD == "auto":
+        print(f"Auto-rotate pool: {', '.join(REAL_METHODS)}", flush=True)
 
     asyncio.create_task(stats_reporter())
 

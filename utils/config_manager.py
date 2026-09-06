@@ -14,7 +14,7 @@ DEFAULTS: dict = {
     "ENDPOINTS": [],  # optional; if empty, built from CONNECT_IP/PORT
     "FAKE_SNI": "auth.vercel.com",
     "FAKE_SNIS": [],  # optional; if empty, built from FAKE_SNI
-    "BYPASS_METHOD": "wrong_seq",
+    "BYPASS_METHOD": "auto",
     "HANDSHAKE_TIMEOUT": 2.0,
     "MAX_CONNECTIONS": 200,
     "FAKE_DELAY": 0.001,
@@ -32,7 +32,7 @@ INJECTOR_KEYS = ("LISTEN_HOST", "LISTEN_PORT", "CONNECT_IP", "CONNECT_PORT",
                  "ENDPOINTS", "FAKE_SNI", "FAKE_SNIS", "BYPASS_METHOD",
                  "HANDSHAKE_TIMEOUT", "MAX_CONNECTIONS", "FAKE_DELAY")
 
-SUPPORTED_METHODS = ("wrong_seq", "wrong_seq_ttl", "split_seq")
+SUPPORTED_METHODS = ("auto", "wrong_seq", "wrong_seq_ttl", "split_seq")
 
 
 def _as_int(v, default):
@@ -75,7 +75,7 @@ def migrate(cfg: dict) -> dict:
         out["FAKE_SNIS"] = [s] if s else []
     else:
         out["FAKE_SNIS"] = [str(s).strip() for s in snis if str(s).strip()]
-    out["BYPASS_METHOD"] = str(out.get("BYPASS_METHOD", "wrong_seq")).strip() or "wrong_seq"
+    out["BYPASS_METHOD"] = str(out.get("BYPASS_METHOD", "auto")).strip() or "auto"
     out["HANDSHAKE_TIMEOUT"] = _as_float(out.get("HANDSHAKE_TIMEOUT", 2.0), 2.0)
     out["MAX_CONNECTIONS"] = _as_int(out.get("MAX_CONNECTIONS", 200), 200)
     out["FAKE_DELAY"] = _as_float(out.get("FAKE_DELAY", 0.001), 0.001)

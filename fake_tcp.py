@@ -26,7 +26,20 @@ from injecter import TcpInjector
 
 log = logging.getLogger("fake_tcp")
 
-SUPPORTED_METHODS = ("wrong_seq", "wrong_seq_ttl", "split_seq")
+SUPPORTED_METHODS = ("auto", "wrong_seq", "wrong_seq_ttl", "split_seq")
+# Real wire methods — "auto" rotates one of these per connection.
+REAL_METHODS = ("wrong_seq", "wrong_seq_ttl", "split_seq")
+
+
+def resolve_method(name: str) -> str:
+    """Map a configured method to the wire method for one connection."""
+    import random
+    name = str(name or "").strip() or "auto"
+    if name == "auto":
+        return random.choice(REAL_METHODS)
+    if name in REAL_METHODS:
+        return name
+    raise ValueError("unsupported bypass method: %r (expected one of %s)" % (name, SUPPORTED_METHODS))
 
 
 def split_plan(syn_seq: int, total_len: int, first_len: int) -> tuple[int, int]:
@@ -50,7 +63,8 @@ class FakeInjectiveConnection(MonitorConnection):
         self.counted = False  # True once increment_active() was called
         self.t2a_event = asyncio.Event()
         self.t2a_msg = ""
-        self.bypass_method = bypass_method
+        # "auto" is resolved per connection so every method gets tried.
+        self.bypass_method = resolve_method(bypass_method)
         self.peer_sock = peer_sock
         self.running_loop = asyncio.get_running_loop()
 
