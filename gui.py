@@ -386,9 +386,10 @@ class ModernButton(tk.Canvas):
         # Displayed fill animates toward the target for a smooth hover fade.
         self._disp_fill = self.STYLES[style][0]
         self._tween_id = None
+        self._draw_pending = None
         self._body = None
         self._label = None
-        self.bind("<Configure>", lambda e: self._draw())
+        self.bind("<Configure>", lambda e: self._request_draw())
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
         self.bind("<ButtonPress-1>", self._on_press)
@@ -398,7 +399,7 @@ class ModernButton(tk.Canvas):
             self.bind("<FocusOut>", lambda e: self._on_focus(False))
             self.bind("<Return>", lambda e: self._keyboard_activate())
             self.bind("<space>", lambda e: self._keyboard_activate())
-            self.bind("<Destroy>", lambda e: self._cancel_tween(), add="+")
+            self.bind("<Destroy>", lambda e: (self._cancel_tween(), self._cancel_pending_draw()), add="+")
         except Exception:
             pass
         self._draw()
@@ -433,6 +434,44 @@ class ModernButton(tk.Canvas):
                 except Exception:
                     pass
                 self._tween_id = None
+        except Exception:
+            pass
+        self._cancel_pending_draw()
+
+    def _cancel_pending_draw(self):
+        try:
+            if getattr(self, "_draw_pending", None) is not None:
+                try:
+                    self.after_cancel(self._draw_pending)
+                except Exception:
+                    pass
+                self._draw_pending = None
+        except Exception:
+            pass
+
+    def _request_draw(self, delay: int = 10):
+        """Collapse rapid <Configure> bursts into a single repaint.
+
+        Without this, initial packing fires dozens of resizes and every
+        button redraws synchronously, stalling cold start.
+        """
+        try:
+            if getattr(self, "_draw_pending", None) is not None:
+                return
+            self._draw_pending = self.after(
+                max(0, int(delay)), self._flush_draw)
+        except Exception:
+            pass
+
+    def _flush_draw(self):
+        try:
+            self._draw_pending = None
+        except Exception:
+            pass
+        try:
+            if not self.winfo_exists():
+                return
+            self._draw()
         except Exception:
             pass
 
@@ -487,14 +526,11 @@ class ModernButton(tk.Canvas):
             ww = self.winfo_width()
         except Exception:
             return
-        # Pre-layout: canvas not yet sized — defer instead of drawing a
-        # degenerate 2px shape that flashes/flickers in the sidebar.
-        if ww < 10:
-            try:
-                self.after(15, lambda: self._draw() if self.winfo_exists() else None)
-            except Exception:
-                pass
-            return
+        # No deferred retry loop here: hidden pages (place_forget) keep
+        # width==1 until first shown, and an after(15,_draw) reschedule
+        # would flood the event queue at startup (the observed freeze).
+        # Draw a cheap placeholder at any size; <Configure> repaints us
+        # via _request_draw once real geometry arrives.
         w = max(2, ww)
         h = max(2, self.winfo_height())
         _fill_target, fg = self._colors()
@@ -549,20 +585,18 @@ class ModernButton(tk.Canvas):
 
     def _tween_to(self, target: str, steps: int = 5, delay: int = 12):
         """Animate displayed fill toward target hex color."""
-        try:
-            if self._tween_id is not None:
-                try:
-                    self.after_cancel(self._tween_id)
-                except Exception:
-                    pass
-                self._tween_id = None
-        except Exception:
-            pass
+        self._cancel_tween()
         try:
             start = self._disp_fill
         except Exception:
             start = target
-        if start == target or not self._enabled:
+        # Hidden buttons (inactive pages) must never animate: snap so no
+        # after() chain runs offscreen during startup.
+        try:
+            hidden = not self.winfo_ismapped()
+        except Exception:
+            hidden = False
+        if hidden or start == target or not self._enabled:
             try:
                 self._disp_fill = target
             except Exception:
@@ -726,6 +760,14 @@ class ToggleSwitch(tk.Canvas):
             try:
                 if not self.winfo_exists():
                     return
+                try:
+                    if not self.winfo_ismapped():
+                        self._knob = target
+                        self._draw()
+                        self._anim_id = None
+                        return
+                except Exception:
+                    pass
                 t = i / max(1, steps)
                 self._knob = start + (target - start) * t
                 self._draw()
@@ -753,9 +795,9 @@ class ToggleSwitch(tk.Canvas):
             (_mix_hex(base, "#FFFFFF", 0.10) if self._hover else base)
         # Track border for definition on dark cards.
         _round_rect(self, 1, 1, w - 1, h - 1, r, fill=track, outline=THEME["btn_border"])
-        # Inner top sheen.
+        # Solid inner sheen (no stipple: stipple renders as dashes on Windows).
         try:
-            self.create_line(8, 2, w - 8, 2, fill="#FFFFFF", stipple="gray12")
+            self.create_line(8, 2, w - 8, 2, fill=_mix_hex(track, "#FFFFFF", 0.15))
         except Exception:
             pass
         if self._knob is None:
@@ -763,10 +805,10 @@ class ToggleSwitch(tk.Canvas):
             self._knob = knob_x
         else:
             knob_x = self._knob
-        # Knob shadow + bright knob.
+        # Knob shadow (solid, no stipple) + bright knob.
         try:
             self.create_oval(knob_x - (r - 3), 4, knob_x + (r - 3), h - 2,
-                             fill=THEME["btn_shadow"], outline="", stipple="gray50")
+                             fill=THEME["btn_shadow"], outline="")
         except Exception:
             pass
         self.create_oval(knob_x - (r - 3), 3, knob_x + (r - 3), h - 3,
@@ -854,8 +896,11 @@ class SpooferGUI:
         self.root.geometry("1060x760")
         self.root.minsize(940, 660)
         self.root.configure(bg=THEME["bg"])
+        # Fast startup: show the window immediately at full opacity.
+        # (Previous -alpha 0.0 + fade kept the app invisible while the
+        # initial layout/animation storm ran, reading as a freeze.)
         try:
-            self.root.attributes("-alpha", 0.0)
+            self.root.attributes("-alpha", 1.0)
         except Exception:
             pass
 
@@ -987,37 +1032,53 @@ class SpooferGUI:
         self.root.after(800, lambda: self._slide_indicator(self._page))
 
         self._open_log_file()
-        self.log("SNI Spoofer ready. Configure, then press START.", "info")
-        if self.file_endpoints:
-            self.log("Loaded %d endpoint candidate(s) from ip_list.txt "
-                     "(sampled, max %d used)." % (len(self.file_endpoints), MAX_FILE_ENDPOINTS), "info")
-        elif os.path.exists(IP_LIST_PATH):
-            self.log("ip_list.txt found but no usable IPs/CIDRs parsed.", "warning")
-        if self.file_snis:
-            self.log("Loaded %d SNI candidate(s) from sni_list.txt." % len(self.file_snis), "info")
-        elif os.path.exists(SNI_LIST_PATH):
-            self.log("sni_list.txt found but no usable SNIs parsed.", "warning")
-        if not is_admin():
-            self.log("Not Administrator — injector (WinDivert) will fail until restart as admin.", "warning")
-        else:
-            self.log("Running as Administrator.", "success")
-        err = check_pydivert()
-        if err:
-            self.log("%s — run: pip install -r requirements.txt" % err, "warning")
-        if getattr(sys, "frozen", False):
-            if not os.path.exists(BACKEND_EXE):
-                self.log("sni-backend.exe not found at %s" % BACKEND_EXE, "error")
-        elif not os.path.exists(MAIN_PATH):
-            self.log("main.py not found at %s" % MAIN_PATH, "error")
-        self._fade_window_in()
+        self._show_window()
+        # Defer environment checks until after first paint so cold open
+        # never blocks on admin/driver/filesystem probes.
+        try:
+            self.root.after(250, self._startup_checks)
+        except Exception:
+            self._startup_checks()
+
+    def _show_window(self):
+        """Make sure the window is fully visible (no fade on startup)."""
+        try:
+            self.root.attributes("-alpha", 1.0)
+        except Exception:
+            pass
+
+    def _startup_checks(self):
+        try:
+            self.log("SNI Spoofer ready. Configure, then press START.", "info")
+            if self.file_endpoints:
+                self.log("Loaded %d endpoint candidate(s) from ip_list.txt "
+                         "(sampled, max %d used)." % (len(self.file_endpoints), MAX_FILE_ENDPOINTS), "info")
+            elif os.path.exists(IP_LIST_PATH):
+                self.log("ip_list.txt found but no usable IPs/CIDRs parsed.", "warning")
+            if self.file_snis:
+                self.log("Loaded %d SNI candidate(s) from sni_list.txt." % len(self.file_snis), "info")
+            elif os.path.exists(SNI_LIST_PATH):
+                self.log("sni_list.txt found but no usable SNIs parsed.", "warning")
+            if not is_admin():
+                self.log("Not Administrator — injector (WinDivert) will fail until restart as admin.", "warning")
+            else:
+                self.log("Running as Administrator.", "success")
+            err = check_pydivert()
+            if err:
+                self.log("%s — run: pip install -r requirements.txt" % err, "warning")
+            if getattr(sys, "frozen", False):
+                if not os.path.exists(BACKEND_EXE):
+                    self.log("sni-backend.exe not found at %s" % BACKEND_EXE, "error")
+            elif not os.path.exists(MAIN_PATH):
+                self.log("main.py not found at %s" % MAIN_PATH, "error")
+        except Exception:
+            pass
 
     # -- animations ------------------------------------------------
-    def _fade_window_in(self, a=0.0):
+    def _fade_window_in(self, a=1.0):
+        # Kept for compatibility; startup no longer fades (instant paint).
         try:
-            a = min(1.0, a + 0.08)
-            self.root.attributes("-alpha", a)
-            if a < 1.0:
-                self.root.after(22, lambda: self._fade_window_in(a))
+            self.root.attributes("-alpha", 1.0)
         except Exception:
             pass
 
@@ -1580,18 +1641,10 @@ class SpooferGUI:
         self.btn_console_toggle.pack(side=tk.LEFT, padx=(6, 0))
         ModernButton(h, text="Export", command=self.export_log, style="ghost", height=26).pack(side=tk.RIGHT, padx=(6, 0))
         ModernButton(h, text="Clear", command=self.clear_log, style="ghost", height=26).pack(side=tk.RIGHT, padx=(0, 6))
-        # Verbose toggle removed: console always hides routine packet notes.
-        try:
-            import tkinter.font as tkfont
-            available = set(tkfont.families())
-            if "Cascadia Code" in available:
-                mono_font = ("Cascadia Code", 10)
-            elif "JetBrains Mono" in available:
-                mono_font = ("JetBrains Mono", 10)
-            else:
-                mono_font = ("Consolas", 10)
-        except Exception:
-            mono_font = FONT_MONO
+        # Fast startup: tkfont.families() enumerates every system font and
+        # can block cold open for seconds. Paint with Consolas now and
+        # upgrade to the preferred mono font after first paint.
+        mono_font = ("Consolas", 10)
         self.console = scrolledtext.ScrolledText(box, bg=THEME["console_bg"], fg=THEME["fg"],
                                                  font=mono_font, relief=tk.FLAT, wrap=tk.WORD, height=8,
                                                  insertbackground=THEME["accent"],
@@ -1600,6 +1653,30 @@ class SpooferGUI:
         for tag, col in (("info", THEME["accent"]), ("success", THEME["success"]),
                          ("warning", THEME["warning"]), ("error", THEME["danger"])):
             self.console.tag_config(tag, foreground=col)
+        try:
+            self.root.after(400, self._upgrade_console_font)
+        except Exception:
+            pass
+
+    def _upgrade_console_font(self):
+        """Swap in the preferred mono font after the window is visible."""
+        try:
+            if not getattr(self, "console", None) or not self.console.winfo_exists():
+                return
+            import tkinter.font as tkfont
+            available = set(tkfont.families())
+            if "Cascadia Code" in available:
+                mono_font = ("Cascadia Code", 10)
+            elif "JetBrains Mono" in available:
+                mono_font = ("JetBrains Mono", 10)
+            else:
+                return
+            try:
+                self.console.configure(font=mono_font)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _toggle_console(self):
         """Collapse/expand only the console text widget; header stays visible."""
