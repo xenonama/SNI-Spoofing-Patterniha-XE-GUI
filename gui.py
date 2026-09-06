@@ -11,6 +11,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -90,6 +91,16 @@ THEME = {
     "stats_bg": "#141922",
     "console_bg": "#10131A",
     "toggle_off": "#3A4150",
+    "toggle_off_hover": "#454E60",
+    "toggle_on": "#1FA055",
+    "toggle_on_hover": "#27B563",
+    "toggle_on_border": "#157A40",
+    "toggle_text_on": "#FFFFFF",
+    "toggle_text_off": "#8B95A7",
+    "scroll_thumb": "#5C6575",
+    "scroll_thumb_hover": "#7A8598",
+    "scroll_thumb_press": "#9AA4B5",
+    "scroll_thumb_disabled": "#2A2F3A",
     "selector_selected": "#1E2A36",
     "selector_hover": "#232A36",
     "btn_hover": "#252B36",
@@ -138,6 +149,100 @@ def check_pydivert():
         import pydivert  # noqa: F401
     except Exception as exc:
         return "pydivert import failed: %s" % exc
+    return None
+
+
+def find_xray_exe() -> str | None:
+    """Search for xray.exe in likely locations. Returns full path or None.
+
+    Order: XRAY_PATH env var -> APP_DIR -> APP_DIR subfolders
+    (xray/, bin/) -> current working dir -> PATH (shutil.which).
+    """
+    try:
+        env = (os.environ.get("XRAY_PATH") or "").strip().strip('"')
+        if env and os.path.isfile(env):
+            return os.path.abspath(env)
+    except Exception:
+        pass
+    candidates: list = []
+    try:
+        candidates.append(os.path.join(APP_DIR, "xray.exe"))
+        for sub in ("xray", "bin", "Xray"):
+            candidates.append(os.path.join(APP_DIR, sub, "xray.exe"))
+        candidates.append(os.path.join(os.getcwd(), "xray.exe"))
+    except Exception:
+        pass
+    for path in candidates:
+        try:
+            if path and os.path.isfile(path):
+                return os.path.abspath(path)
+        except Exception:
+            continue
+    # PATH lookup (+ current dir on Windows via which).
+    for name in ("xray.exe", "xray"):
+        try:
+            found = shutil.which(name)
+        except Exception:
+            found = None
+        if found and os.path.isfile(found):
+            return os.path.abspath(found)
+    return None
+
+
+def windivert_hint_for_error(err_text: str, already_admin: bool) -> str:
+    """One-line actionable hint for a WinDivert open failure."""
+    low = (err_text or "").lower()
+    if "1058" in low or "cannot be started" in low or "disabled" in low:
+        return ("WinDivert driver service cannot start (WinError 1058) — the "
+                "driver is disabled/blocked, not just a rights issue. Fix: "
+                "1) keep WinDivert64.sys next to pydivert, "
+                "2) run 'sc qc WinDivert' — StartType must not be DISABLED "
+                "('sc config WinDivert start= demand'), "
+                "3) reboot after first install, "
+                "4) disable VPN/antivirus filtering or Core-isolation Memory-integrity "
+                "blocking the driver, 5) use matching bitness (64-bit Python on 64-bit Windows).")
+    if "access is denied" in low or "5" in low and "denied" in low:
+        if already_admin:
+            return ("WinDivert: Access denied even as Administrator — driver blocked "
+                    "(antivirus / GPO / Memory integrity) or another WinDivert handle holds it. "
+                    "Reboot, then try again.")
+        return "WinDivert failed — relaunch GUI as Administrator (RUN AS ADMIN) and press START again."
+    if already_admin:
+        return ("WinDivert open failed while Administrator — driver blocked/missing. "
+                "Reinstall pydivert (pip install --force-reinstall pydivert), reboot, "
+                "and check antivirus / Memory integrity settings.")
+    return "WinDivert failed — run GUI as Administrator (RUN AS ADMIN) and press START again."
+
+
+def diagnose_windivert_driver() -> str | None:
+    """Return a warning string if WinDivert driver files/service look broken, else None."""
+    try:
+        import pydivert  # noqa: F401
+        import pydivert.windrivert_dll  # noqa
+    except Exception:
+        pass
+    try:
+        import os as _os
+        import pydivert as _pd
+        base = _os.path.dirname(_pd.__file__)
+        dll_dir = _os.path.join(base, "windivert_dll")
+        has_sys = (_os.path.isfile(_os.path.join(dll_dir, "WinDivert64.sys"))
+                   or _os.path.isfile(_os.path.join(dll_dir, "WinDivert32.sys")))
+        if not has_sys:
+            return "WinDivert driver files (.sys) missing from pydivert package — reinstall pydivert."
+    except Exception:
+        pass
+    # Service stuck in Stop-Pending / Disabled is the classic 1058 cause.
+    if sys.platform == "win32":
+        try:
+            out = subprocess.run(["sc", "qc", "WinDivert"], capture_output=True,
+                                 text=True, timeout=5)
+            txt = (out.stdout or "") + (out.stderr or "")
+            if "DISABLED" in txt.upper():
+                return ("WinDivert service is DISABLED (sc qc WinDivert) — "
+                        "run 'sc config WinDivert start= demand' as Administrator, then reboot.")
+        except Exception:
+            pass
     return None
 
 
@@ -694,20 +799,40 @@ class ModernButton(tk.Canvas):
 
 
 class ToggleSwitch(tk.Canvas):
-    """iOS-style toggle with sliding knob + hover sheen."""
+    """Fluent-style pill toggle with ON/OFF text, focus ring + keyboard.
 
-    def __init__(self, parent, variable, width=44, height=24):
+    Compatible subset: .toggle(), .config(state=...), .cget("state").
+    Click, Space/Return and programmatic var.set() all animate the knob.
+    """
+
+    def __init__(self, parent, variable, width=52, height=28, command=None,
+                 bg=None, state=tk.NORMAL):
         super().__init__(parent, width=width, height=height,
-                         bg=THEME["card"], highlightthickness=0, bd=0, cursor="hand2")
+                         bg=bg or THEME["card"], highlightthickness=0, bd=0,
+                         cursor="hand2")
+        try:
+            self.configure(takefocus=1)
+        except Exception:
+            pass
         self.var = variable
+        self._command = command
         self._tw, self._th = width, height
         self._hover = False
+        self._press = False
+        self._focused = False
+        self._enabled = (state == tk.NORMAL)
         self._knob = None  # animated knob center-x; None = snap on next draw
         self._anim_id = None
-        self.bind("<Button-1>", lambda e: self.toggle())
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
         try:
             self.bind("<Enter>", lambda e: self._set_hover(True))
-            self.bind("<Leave>", lambda e: self._set_hover(False))
+            self.bind("<Leave>", lambda e: self._on_leave())
+            self.bind("<FocusIn>", lambda e: self._on_focus(True))
+            self.bind("<FocusOut>", lambda e: self._on_focus(False))
+            self.bind("<Return>", lambda e: self.toggle())
+            self.bind("<space>", lambda e: self.toggle())
+            self.bind("<Destroy>", lambda e: self._cancel_anim(), add="+")
         except Exception:
             pass
         self._draw()
@@ -715,17 +840,81 @@ class ToggleSwitch(tk.Canvas):
             self.var.trace_add("write", lambda *a: self._animate())
         except Exception:
             pass
+        self._sync_cursor()
 
+    # -- public ------------------------------------------------------
     def toggle(self):
+        if not self._enabled:
+            return
         try:
             self.var.set(not self.var.get())
         except Exception:
             pass
         self._animate()
+        if self._command is not None:
+            try:
+                self._command(bool(self.var.get()))
+            except Exception:
+                pass
+
+    def config(self, **kw):
+        if "state" in kw:
+            self._enabled = (kw.pop("state") == tk.NORMAL)
+            self._sync_cursor()
+            self._draw()
+        if "command" in kw:
+            self._command = kw.pop("command")
+        if kw:
+            super().config(**kw)
+
+    configure = config
+
+    def cget(self, key):
+        if key == "state":
+            return tk.NORMAL if self._enabled else tk.DISABLED
+        return super().cget(key)
+
+    # -- events ------------------------------------------------------
+    def _sync_cursor(self):
+        try:
+            self.configure(cursor="hand2" if self._enabled else "arrow")
+        except Exception:
+            pass
 
     def _set_hover(self, on: bool):
+        if not self._enabled:
+            return
         self._hover = bool(on)
         self._draw()
+
+    def _on_leave(self):
+        self._hover = False
+        self._press = False
+        self._draw()
+
+    def _on_focus(self, focused: bool):
+        self._focused = bool(focused)
+        self._draw()
+
+    def _on_press(self, _e=None):
+        if not self._enabled:
+            return
+        try:
+            self.focus_set()
+        except Exception:
+            pass
+        self._press = True
+        self._draw()
+
+    def _on_release(self, _e=None):
+        if not self._enabled:
+            self._press = False
+            return
+        was = self._press
+        self._press = False
+        self._draw()
+        if was:
+            self.toggle()
 
     def _target_x(self) -> float:
         try:
@@ -735,7 +924,7 @@ class ToggleSwitch(tk.Canvas):
         _w, _h, r = self._tw, self._th, self._th / 2
         return (_w - r - 2) if on else (r + 2)
 
-    def _animate(self, steps: int = 6, delay: int = 12):
+    def _cancel_anim(self):
         try:
             if self._anim_id is not None:
                 try:
@@ -745,6 +934,9 @@ class ToggleSwitch(tk.Canvas):
                 self._anim_id = None
         except Exception:
             pass
+
+    def _animate(self, steps: int = 7, delay: int = 12):
+        self._cancel_anim()
         try:
             target = self._target_x()
             start = self._knob if self._knob is not None else target
@@ -769,7 +961,8 @@ class ToggleSwitch(tk.Canvas):
                 except Exception:
                     pass
                 t = i / max(1, steps)
-                self._knob = start + (target - start) * t
+                e = t * t * (3 - 2 * t)  # smoothstep ease
+                self._knob = start + (target - start) * e
                 self._draw()
                 if i < steps:
                     self._anim_id = self.after(delay, lambda: _step(i + 1))
@@ -782,6 +975,18 @@ class ToggleSwitch(tk.Canvas):
                     pass
         _step(1)
 
+    def _track_colors(self, on: bool):
+        if not self._enabled:
+            return THEME["disabled_bg"], THEME["card_edge"]
+        if on:
+            base = THEME["toggle_on_hover"] if self._hover else THEME["toggle_on"]
+            border = THEME["accent"] if (self._focused or self._hover) \
+                else THEME.get("toggle_on_border", THEME["success_dim"])
+            return base, border
+        base = THEME["toggle_off_hover"] if self._hover else THEME["toggle_off"]
+        border = THEME["accent"] if self._focused else THEME["btn_border"]
+        return base, border
+
     def _draw(self):
         self.delete("all")
         try:
@@ -789,15 +994,28 @@ class ToggleSwitch(tk.Canvas):
         except Exception:
             on = False
         w, h, r = self._tw, self._th, self._th / 2
-        base = THEME["primary"] if on else THEME["toggle_off"]
-        # Hover sheen: subtly lighten the track.
-        track = _mix_hex(base, "#FFFFFF", 0.12) if (self._hover and on) else \
-            (_mix_hex(base, "#FFFFFF", 0.10) if self._hover else base)
-        # Track border for definition on dark cards.
-        _round_rect(self, 1, 1, w - 1, h - 1, r, fill=track, outline=THEME["btn_border"])
-        # Solid inner sheen (no stipple: stipple renders as dashes on Windows).
+        track, border = self._track_colors(on)
+        # Keyboard focus ring outside the track.
+        if self._focused and self._enabled:
+            try:
+                _round_rect(self, 0, 0, w, h, r + 1, fill="", outline=THEME["accent"])
+            except Exception:
+                pass
+        _round_rect(self, 1, 1, w - 1, h - 1, r, fill=track, outline=border)
+        # Solid top sheen (no stipple: stipple renders as dashes on Windows).
         try:
-            self.create_line(8, 2, w - 8, 2, fill=_mix_hex(track, "#FFFFFF", 0.15))
+            self.create_line(10, 2, w - 10, 2, fill=_mix_hex(track, "#FFFFFF", 0.18))
+        except Exception:
+            pass
+        # ON/OFF glyph on the free side of the knob.
+        try:
+            txt = "ON" if on else "OFF"
+            fg = THEME["toggle_text_on"] if on else THEME["toggle_text_off"]
+            if not self._enabled:
+                fg = THEME["disabled_fg"]
+            tx = 13 if on else (w - 14)
+            self.create_text(tx, h / 2 + 0.5, text=txt,
+                             font=("Segoe UI", 7, "bold"), fill=fg)
         except Exception:
             pass
         if self._knob is None:
@@ -805,14 +1023,23 @@ class ToggleSwitch(tk.Canvas):
             self._knob = knob_x
         else:
             knob_x = self._knob
+        kr = h / 2 - 4
+        stretch = 2 if (self._press and self._enabled) else 0
+        try:
+            cy = h / 2 + (1 if self._press else 0)
+        except Exception:
+            cy = h / 2
         # Knob shadow (solid, no stipple) + bright knob.
         try:
-            self.create_oval(knob_x - (r - 3), 4, knob_x + (r - 3), h - 2,
+            self.create_oval(knob_x - kr - stretch, cy - kr + 2,
+                             knob_x + kr + stretch, cy + kr + 1,
                              fill=THEME["btn_shadow"], outline="")
         except Exception:
             pass
-        self.create_oval(knob_x - (r - 3), 3, knob_x + (r - 3), h - 3,
-                         fill="#FFFFFF", outline="#C9D2DE")
+        self.create_oval(knob_x - kr - stretch, cy - kr,
+                         knob_x + kr + stretch, cy + kr,
+                         fill="#FFFFFF" if self._enabled else THEME["disabled_fg"],
+                         outline="#C9D2DE" if self._enabled else THEME["card_edge"])
 
 
 SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -914,8 +1141,34 @@ class SpooferGUI:
                               arrowcolor=THEME["accent"], borderwidth=0)
         self._style.configure("Modern.Horizontal.TProgressbar", background=THEME["accent"],
                               troughcolor=THEME["header"], borderwidth=0, thickness=4)
-        self._style.configure("Modern.Vertical.TScrollbar", background=THEME["input"],
-                              troughcolor=THEME["bg"], borderwidth=0, arrowcolor=THEME["muted"])
+        # Windows 10 look: thin (~12px) square thumb blended into the
+        # trough, no arrow buttons, grey thumb that lightens on hover.
+        # clam cannot do rounded thumbs, so square is the honest match.
+        # NOTE: ttk.Scrollbar has no -width option; in clam the bar
+        # thickness tracks `arrowsize`, so arrows are dropped from the
+        # layout entirely and arrowsize=12 purely sets the ~12px width.
+        _win10_layout = [("Vertical.Scrollbar.trough", {
+            "sticky": "ns", "children": [
+                ("Vertical.Scrollbar.thumb", {"sticky": "nswe"})]})]
+        for _sb_style, _trough in (("Modern.Vertical.TScrollbar", THEME["bg"]),
+                                   ("Console.Vertical.TScrollbar", THEME["card"])):
+            try:
+                self._style.layout(_sb_style, _win10_layout)
+            except Exception:
+                pass
+            self._style.configure(
+                _sb_style, background=THEME["scroll_thumb"],
+                troughcolor=_trough, borderwidth=0, relief="flat",
+                arrowsize=12, gripcount=0, lightcolor=_trough,
+                darkcolor=_trough, bordercolor=_trough)
+            try:
+                self._style.map(
+                    _sb_style,
+                    background=[("pressed", THEME["scroll_thumb_press"]),
+                                ("active", THEME["scroll_thumb_hover"]),
+                                ("disabled", THEME["scroll_thumb_disabled"])])
+            except Exception:
+                pass
 
         self.injector_proc = None
         self.xray_proc = None
@@ -939,7 +1192,6 @@ class SpooferGUI:
         self._prev_up = 0
         self._prev_down = 0
         self._prev_traffic_t = 0.0
-        self.restart_tries = 0
         self._cards: list = []
         self._method_rows = {}
         self._mode_rows = {}
@@ -971,7 +1223,6 @@ class SpooferGUI:
         self.v_method = tk.StringVar(value=str(cfg.get("BYPASS_METHOD", "auto")))
         self.v_timeout = tk.StringVar(value=str(cfg.get("HANDSHAKE_TIMEOUT", 2.0)))
         self.v_maxconn = tk.StringVar(value=str(cfg.get("MAX_CONNECTIONS", 200)))
-        self.v_autorestart = tk.BooleanVar(value=True)
         # Verbose toggle removed: console always behaves as Verbose=OFF.
         try:
             self.v_method.trace_add("write", lambda *a: self._refresh_method_ui())
@@ -1066,6 +1317,16 @@ class SpooferGUI:
             err = check_pydivert()
             if err:
                 self.log("%s — run: pip install -r requirements.txt" % err, "warning")
+            else:
+                warn = diagnose_windivert_driver()
+                if warn:
+                    self.log(warn, "warning")
+            xray_found = find_xray_exe()
+            if xray_found:
+                self.log("xray.exe found: %s" % xray_found, "success")
+            else:
+                self.log("xray.exe not found (APP_DIR, xray/bin subfolders, CWD, PATH, XRAY_PATH) "
+                         "— SNI injector still works alone; Trojan+Xray mode needs it.", "warning")
             if getattr(sys, "frozen", False):
                 if not os.path.exists(BACKEND_EXE):
                     self.log("sni-backend.exe not found at %s" % BACKEND_EXE, "error")
@@ -1203,7 +1464,21 @@ class SpooferGUI:
         canvas = tk.Canvas(outer, bg=THEME["bg"], highlightthickness=0)
         vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview,
                             style="Modern.Vertical.TScrollbar")
-        canvas.configure(yscrollcommand=vsb.set)
+
+        def _page_yscroll(first, last):
+            # Win10 feel: dim the thumb when nothing overflows, so short
+            # pages don't show an active-looking scrollbar. The bar stays
+            # packed (fixed 12px) to avoid layout jumps.
+            try:
+                vsb.set(first, last)
+                if float(first) <= 0.0 and float(last) >= 1.0:
+                    vsb.state(["disabled"])
+                else:
+                    vsb.state(["!disabled"])
+            except Exception:
+                pass
+
+        canvas.configure(yscrollcommand=_page_yscroll)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         # Wheel over empty canvas area should scroll too (children are
@@ -1220,6 +1495,12 @@ class SpooferGUI:
             try:
                 canvas.configure(scrollregion=canvas.bbox("all"))
                 canvas.itemconfig(win, width=max(1, canvas.winfo_width()))
+                # Refresh dim state after geometry settles.
+                try:
+                    first, last = canvas.yview()
+                    _page_yscroll(str(first), str(last))
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -1354,11 +1635,6 @@ class SpooferGUI:
         tk.Label(trow, text="Max conn", bg=THEME["card"], fg=THEME["muted"],
                  font=FONT_N).pack(side=tk.LEFT, padx=(10, 2))
         self._entry(trow, self.v_maxconn, width=7).pack(side=tk.LEFT, padx=2)
-        arow = tk.Frame(card, bg=THEME["card"])
-        arow.pack(fill=tk.X, padx=14, pady=(2, 8))
-        tk.Label(arow, text="Auto-restart on crash", bg=THEME["card"], fg=THEME["muted"],
-                 font=FONT_N).pack(side=tk.LEFT)
-        ToggleSwitch(arow, self.v_autorestart).pack(side=tk.LEFT, padx=10)
         self._card(p1, "Failover  ·  extra endpoints + SNIs").pack(fill=tk.X, pady=(0, 14))
         card = self._cards[-1]
         self._row(card, "Extra endpoints", None, w=40, text_var_name="extra",
@@ -1568,9 +1844,11 @@ class SpooferGUI:
             self._paint_selector_row(row, k == cur)
 
     def _xray_status(self):
-        if os.path.exists(os.path.join(APP_DIR, "xray.exe")):
-            return "xray.exe found"
-        return "xray.exe MISSING — SNI injector still works alone"
+        found = find_xray_exe()
+        if found:
+            return "xray.exe found: %s" % found
+        return ("xray.exe MISSING (searched APP_DIR, xray/bin subfolders, CWD, PATH, "
+                "XRAY_PATH) — SNI injector still works alone")
 
     def _refresh_mode_ui(self):
         rows = getattr(self, "_mode_rows", None)
@@ -1645,11 +1923,30 @@ class SpooferGUI:
         # can block cold open for seconds. Paint with Consolas now and
         # upgrade to the preferred mono font after first paint.
         mono_font = ("Consolas", 10)
-        self.console = scrolledtext.ScrolledText(box, bg=THEME["console_bg"], fg=THEME["fg"],
-                                                 font=mono_font, relief=tk.FLAT, wrap=tk.WORD, height=8,
-                                                 insertbackground=THEME["accent"],
-                                                 selectbackground=THEME["accent_dim"])
-        self.console.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 12))
+        self.console_frame = tk.Frame(box, bg=THEME["card"])
+        self.console_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 12))
+        self.console = tk.Text(self.console_frame, bg=THEME["console_bg"], fg=THEME["fg"],
+                               font=mono_font, relief=tk.FLAT, wrap=tk.WORD, height=8,
+                               insertbackground=THEME["accent"],
+                               selectbackground=THEME["accent_dim"],
+                               highlightthickness=0, bd=0)
+        self.console_vsb = ttk.Scrollbar(self.console_frame, orient="vertical",
+                                         command=self.console.yview,
+                                         style="Console.Vertical.TScrollbar")
+
+        def _console_yscroll(first, last):
+            try:
+                self.console_vsb.set(first, last)
+                if float(first) <= 0.0 and float(last) >= 1.0:
+                    self.console_vsb.state(["disabled"])
+                else:
+                    self.console_vsb.state(["!disabled"])
+            except Exception:
+                pass
+
+        self.console.configure(yscrollcommand=_console_yscroll)
+        self.console.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.console_vsb.pack(side=tk.RIGHT, fill=tk.Y)
         for tag, col in (("info", THEME["accent"]), ("success", THEME["success"]),
                          ("warning", THEME["warning"]), ("error", THEME["danger"])):
             self.console.tag_config(tag, foreground=col)
@@ -1680,13 +1977,14 @@ class SpooferGUI:
 
     def _toggle_console(self):
         """Collapse/expand only the console text widget; header stays visible."""
+        frame = getattr(self, "console_frame", None) or self.console
         if getattr(self, "_console_expanded", True):
-            self.console.pack_forget()
+            frame.pack_forget()
             self.console_outer.pack_configure(expand=False, fill=tk.X)
             self.btn_console_toggle.configure(text="\u25b6")
             self._console_expanded = False
         else:
-            self.console.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 12))
+            frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 12))
             self.console_outer.pack_configure(expand=True, fill=tk.BOTH)
             self.btn_console_toggle.configure(text="\u25bc")
             self._console_expanded = True
@@ -1995,17 +2293,18 @@ class SpooferGUI:
                                           cfg["FAKE_SNIS"][0], cfg["BYPASS_METHOD"]), "info")
         try:
             self.manual_stop = False
-            self.restart_tries = 0
             self.injector_proc = self._spawn(backend_cmd("--config", CONFIG_PATH))
         except Exception as exc:
             self.log("Failed to start injector: %s" % exc, "error")
             return
         if cfg["MODE"] == "Trojan + Xray":
-            xray_exe = os.path.join(APP_DIR, "xray.exe")
-            if not os.path.exists(xray_exe):
-                self.log("xray.exe not found — running SNI injector only.", "warning")
+            xray_exe = find_xray_exe()
+            if not xray_exe:
+                self.log("xray.exe not found (searched APP_DIR, xray/bin subfolders, CWD, PATH, "
+                         "XRAY_PATH) — running SNI injector only.", "warning")
             else:
                 try:
+                    self.log("Using xray: %s" % xray_exe, "info")
                     self.xray_proc = self._spawn([xray_exe, "-c", XRAY_CONFIG_PATH])
                     self.log("Xray started (SOCKS5 :%s, HTTP :%s)"
                              % (cfg["SOCKS5_PORT"], cfg["HTTP_PORT"]), "success")
@@ -2163,9 +2462,13 @@ class SpooferGUI:
                     # (total silence). Smart-tool, gui and error lines pass.
                     if tag == "injector" and _is_routine_injector_line(line):
                         # Still surface WinDivert failures that hide in routine flow.
-                        if tag == "injector" and ("windivert" in low or "access is denied" in low):
-                            self._append("[gui] WinDivert failed — run GUI as Administrator "
-                                         "(RUN AS ADMIN) and press START again.", "error")
+                        if tag == "injector" and ("windivert" in low or "access is denied" in low
+                                                 or "1058" in low):
+                            try:
+                                hint = windivert_hint_for_error(line, is_admin())
+                            except Exception:
+                                hint = "WinDivert failed."
+                            self._append("[gui] %s" % hint, "error")
                         continue
                     if "error" in low or "fatal" in low or "traceback" in low:
                         lvl = "error"
@@ -2176,9 +2479,13 @@ class SpooferGUI:
                     else:
                         lvl = "info"
                     self._append("[%s] %s" % (tag, line), lvl)
-                    if tag == "injector" and ("windivert" in low or "access is denied" in low):
-                        self._append("[gui] WinDivert failed — run GUI as Administrator "
-                                     "(RUN AS ADMIN) and press START again.", "error")
+                    if tag == "injector" and ("windivert" in low or "access is denied" in low
+                                              or "1058" in low):
+                        try:
+                            hint = windivert_hint_for_error(line, is_admin())
+                        except Exception:
+                            hint = "WinDivert failed."
+                        self._append("[gui] %s" % hint, "error")
                 elif kind == "exit":
                     _, tag = msg
                     self._append("[%s] process exited." % tag, "warning")
@@ -2225,16 +2532,9 @@ class SpooferGUI:
             pass
 
     def _on_injector_exit(self):
+        # No auto-restart: a crash stops the engine and re-enables START,
+        # so STOP always works and logs never spam "1/3" forever.
         if self.manual_stop or not self.running:
-            return
-        if self.v_autorestart.get() and self.restart_tries < 3:
-            self.restart_tries += 1
-            self.log("Injector crashed — auto-restart %d/3 in 2s..." % self.restart_tries, "warning")
-            self._terminate(self.xray_proc)
-            self.xray_proc = None
-            self.injector_proc = None
-            self.running = False
-            self.root.after(2000, self._do_restart)
             return
         self._terminate(self.xray_proc)
         self.xray_proc = None
@@ -2244,16 +2544,8 @@ class SpooferGUI:
         self.btn_stop.config(state=tk.DISABLED)
         self._set_status(False)
         self._bar_show(False)
-        self.log("Injector exited — port in use? not admin? WinDivert? (disable Auto-restart to stop retrying)", "error")
-
-    def _do_restart(self):
-        if self.manual_stop or self.running:
-            return
-        self.btn_start.config(state=tk.NORMAL)
-        self.btn_stop.config(state=tk.DISABLED)
-        self._set_status(False)
-        self.start()
-        self.restart_tries = min(self.restart_tries, 3)
+        self.log("Injector exited — port in use? not admin? WinDivert driver? "
+                 "Fix the error above, then press START again.", "error")
 
     def stop(self):
         if not self.running and self.injector_proc is None:

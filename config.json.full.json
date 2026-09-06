@@ -24,7 +24,7 @@
     "builder.io",
     "strapi.io"
   ],
-  "BYPASS_METHOD": "split_seq",
+  "BYPASS_METHOD": "wrong_seq",
   "HANDSHAKE_TIMEOUT": 2.0,
   "MAX_CONNECTIONS": 200,
   "FAKE_DELAY": 0.001,

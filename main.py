@@ -616,16 +616,39 @@ if __name__ == "__main__":
     injector = FakeTcpInjector(filt, fake_injective_connections, fake_delay=FAKE_DELAY)
     # Pre-flight WinDivert open: fail fast with a clear message instead of
     # starting the relay with a dead injector thread (silent bypass failure).
+    def _windivert_hint(exc: BaseException) -> str:
+        txt = str(exc)
+        low = txt.lower()
+        code = getattr(exc, "winerror", None)
+        if code == 1058 or "1058" in txt or "1058" in low:
+            return (
+                "FATAL: WinDivert open failed: [WinError 1058] driver service cannot start.\n"
+                "This happens even as Administrator when the driver is DISABLED or BLOCKED.\n"
+                "Fix (run in Admin cmd, in order):\n"
+                "  1) sc qc WinDivert  -> StartType must NOT be DISABLED; if it is:\n"
+                "       sc config WinDivert start= demand\n"
+                "  2) Reinstall driver files: pip install --force-reinstall pydivert\n"
+                "  3) Reboot (required after first install / service fix).\n"
+                "  4) Disable interfering VPN/antivirus packet filter; check\n"
+                "     Windows Security > Device security > Core isolation > Memory integrity\n"
+                "     (WinDivert can be blocked when it is ON; test with reboot).\n"
+                "  5) Use matching bitness: 64-bit Python on 64-bit Windows.\n"
+                f"Detail: {txt}"
+            )
+        if isinstance(exc, PermissionError) or "access is denied" in low:
+            return (f"FATAL: WinDivert open failed: {txt}. "
+                    "Run as Administrator (right-click -> Run as administrator).")
+        return f"FATAL: WinDivert open failed: {txt}"
     try:
         injector.w.open()
-    except PermissionError:
-        print("FATAL: WinDivert open failed: Access is denied. Run as Administrator.", flush=True)
+    except PermissionError as exc:
+        print(_windivert_hint(exc), flush=True)
         sys.exit(2)
     except OSError as exc:
-        print(f"FATAL: WinDivert open failed: {exc}", flush=True)
+        print(_windivert_hint(exc), flush=True)
         sys.exit(2)
     except Exception as exc:
-        print(f"FATAL: WinDivert open failed: {exc}", flush=True)
+        print(_windivert_hint(exc), flush=True)
         sys.exit(2)
     try:
         injector.w.close()
