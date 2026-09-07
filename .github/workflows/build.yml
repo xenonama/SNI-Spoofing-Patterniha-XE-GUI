@@ -1,39 +1,42 @@
-# اسم این کار (Workflow) که در گیت‌هاب می‌بینی
+# .github/workflows/build.yml
+# ساخت فایل‌های اجرایی ویندوز (SNI-Spoofer.exe و sni-backend.exe)
+
 name: ساخت فایل اجرایی ویندوز
 
-# مشخص می‌کنیم چه زمانی این کار اجرا شود
+# زمان اجرا: وقتی تگ جدید بزنید یا به‌صورت دستی اجرا کنید
 on:
-  # وقتی یک تگ جدید (مثل v1.0.0) به مخزن فرستادی
   push:
     tags:
-      - 'v*'
-  # این خط رو اضافه کردم تا بتوانی به‌صورت دستی هم از دکمه اجرا کنی (خیلی مفید است)
-  workflow_dispatch:
+      - 'v*'              # هر تگی که با v شروع شود (مثل v1.0.0, v2.3.1)
+  workflow_dispatch:      # اجازه‌ی اجرای دستی از برگه‌ی Actions
+
+# دسترسی‌ها: برای آپلود فایل در ریلیز نیاز به نوشتن داریم
+permissions:
+  contents: write
 
 jobs:
   build:
-    # از یک سرور ویندوزی استفاده کن (چون می‌خواهیم خروجی .exe بگیریم)
-    runs-on: windows-latest
+    runs-on: windows-latest   # سرور ویندوزی (برای ساخت .exe ضروری است)
 
     steps:
-      # 1. کدهای پروژه را از گیت‌هاب دانلود کن
-      - name: دریافت کد پروژه
+      # 1. دریافت کدهای پروژه از مخزن
+      - name: دریافت کد
         uses: actions/checkout@v4
 
-      # 2. پایتون را نصب کن (نسخه 3.11)
+      # 2. نصب پایتون نسخه‌ی 3.11
       - name: نصب پایتون
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # 3. وابستگی‌های مورد نیاز را نصب کن
+      # 3. نصب وابستگی‌ها (پکیج‌های مورد نیاز)
       - name: نصب وابستگی‌ها
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
 
-      # 4. ساخت فایل exe برای رابط کاربری (GUI)
+      # 4. ساخت فایل اجرایی رابط کاربری (GUI)
       - name: ساخت SNI-Spoofer.exe
         run: |
           pyinstaller --noconfirm --clean `
@@ -45,7 +48,7 @@ jobs:
             --paths . `
             gui.py
 
-      # 5. ساخت فایل exe برای قسمت پشتیبان (Backend)
+      # 5. ساخت فایل اجرایی بک‌اند (Injector)
       - name: ساخت sni-backend.exe
         run: |
           pyinstaller --noconfirm --clean `
@@ -57,7 +60,7 @@ jobs:
             --paths . `
             main.py
 
-      # 6. فایل‌های جانبی (تنظیمات و لیست‌ها) را کنار فایل‌های exe کپی کن
+      # 6. کپی فایل‌های جانبی (تنظیمات و لیست‌ها) در کنار فایل‌های exe
       - name: کپی فایل‌های داده
         run: |
           copy config.json dist\
@@ -65,8 +68,8 @@ jobs:
           copy sni_list.txt dist\
           copy xray_config.json dist\
 
-      # 7. همه چیز را در بخش Releases گیت‌هاب آپلود کن
-      - name: آپلود در بخش انتشار (Release)
+      # 7. آپلود تمام فایل‌های موجود در پوشه‌ی dist به ریلیز
+      - name: آپلود در ریلیز
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
