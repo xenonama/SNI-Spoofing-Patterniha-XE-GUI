@@ -1172,6 +1172,14 @@ class SpooferGUI:
 
         self.injector_proc = None
         self.xray_proc = None
+        self.injector_reader = None
+        self.xray_reader = None
+        self._run_id = 0
+        self._child_job = None
+        self._last_stats_t = 0.0
+        self._no_stats_warned = False
+        self._traffic_warn_done = False
+        self._stats_seen = False
         self.running = False
         self.manual_stop = False
         self.start_time = None
@@ -2274,9 +2282,15 @@ class SpooferGUI:
         try:
             lp = int(cfg["LISTEN_PORT"])
             if not smart.is_port_free("127.0.0.1", lp):
-                if not messagebox.askyesno("Port busy",
-                        "Port %d seems IN USE. Start anyway?" % lp):
-                    return
+                messagebox.showerror("Port busy",
+                        "Port %d is already IN USE — a stale backend is probably "
+                        "still running ( duplicates silently steal traffic and "
+                        "freeze the tracker).\n\nPress STOP first, or kill leftovers "
+                        "in an Admin cmd:\n"
+                        "  taskkill /F /IM sni-backend.exe" % lp)
+                self.log("Port %d busy — refusing to start a duplicate backend. "
+                         "Kill stale sni-backend.exe first." % lp, "error")
+                return
         except Exception:
             pass
         if not is_admin():
@@ -2293,6 +2307,7 @@ class SpooferGUI:
                                           cfg["FAKE_SNIS"][0], cfg["BYPASS_METHOD"]), "info")
         try:
             self.manual_stop = False
+            self._run_id += 1
             self.injector_proc = self._spawn(backend_cmd("--config", CONFIG_PATH))
         except Exception as exc:
             self.log("Failed to start injector: %s" % exc, "error")
@@ -2326,15 +2341,23 @@ class SpooferGUI:
         self._prev_up = 0
         self._prev_down = 0
         self._prev_traffic_t = time.time()
+        self._last_stats_t = time.time()
+        self._no_stats_warned = False
+        self._traffic_warn_done = False
+        self._stats_seen = False
         self._refresh_stats()
         self._update_method_hint()
         self.btn_start.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.NORMAL)
         self._set_status(True)
         self._bar_show(True)
-        threading.Thread(target=self._reader, args=(self.injector_proc, "injector"), daemon=True).start()
+        self.injector_reader = threading.Thread(target=self._reader, args=(self.injector_proc, "injector", self._run_id), daemon=True)
+        self.injector_reader.start()
         if self.xray_proc:
-            threading.Thread(target=self._reader, args=(self.xray_proc, "xray"), daemon=True).start()
+            self.xray_reader = threading.Thread(target=self._reader, args=(self.xray_proc, "xray", self._run_id), daemon=True)
+            self.xray_reader.start()
+        else:
+            self.xray_reader = None
         self.log("Injector started.", "success")
         self.toast("Engine started", "success")
 
@@ -2343,13 +2366,57 @@ class SpooferGUI:
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             si.wShowWindow = subprocess.SW_HIDE
-            return subprocess.Popen(cmd, cwd=APP_DIR, stdout=subprocess.PIPE,
+            proc = subprocess.Popen(cmd, cwd=APP_DIR, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                    encoding="utf-8", errors="replace",
                                     startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW)
-        return subprocess.Popen(cmd, cwd=APP_DIR, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        else:
+            proc = subprocess.Popen(cmd, cwd=APP_DIR, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                    encoding="utf-8", errors="replace")
+        self._pin_child(proc)
+        return proc
 
-    def _reader(self, proc, tag: str):
+    def _pin_child(self, proc):
+        """Pin a child proc into a KILL_ON_JOB_CLOSE job (Windows only).
+
+        Once pinned, Windows kills the child automatically whenever THIS
+        process dies — X-close, End Task, crash, console close — so backends
+        can never be orphaned in the background holding the port. Never raises;
+        silently keeps old behavior if pinning is unavailable (e.g. nested job).
+        """
+        if sys.platform != "win32" or proc is None:
+            return
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            job = getattr(self, "_child_job", None)
+            if job is None:
+                job = k32.CreateJobObjectW(None, None)
+                if not job:
+                    return
+                is64 = ctypes.sizeof(ctypes.c_void_p) == 8
+                buf = (ctypes.c_byte * (144 if is64 else 112))()
+                # LimitFlags lives at offset 16 on both 32/64-bit;
+                # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000.
+                ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint32))[4] = 0x2000
+                # JobObjectExtendedLimitInformation = 9.
+                if k32.SetInformationJobObject(job, 9, buf, len(buf)):
+                    self._child_job = job
+                else:
+                    try:
+                        k32.CloseHandle(job)
+                    except Exception:
+                        pass
+                    return
+            try:
+                k32.AssignProcessToJobObject(job, proc._handle)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _reader(self, proc, tag: str, run_id: int = 0):
         try:
             assert proc.stdout is not None
             noise_tail = 0  # lines remaining in an overlapped-cancel spam burst
@@ -2359,11 +2426,12 @@ class SpooferGUI:
                 line = line.rstrip("\r\n")
                 if not line:
                     continue
-                if line.lstrip().startswith('{"type"'):
+                stripped = line.lstrip()
+                if stripped.startswith("{"):
                     try:
-                        obj = json.loads(line)
-                        if obj.get("type") == "stats":
-                            self.msg_q.put(("stats", obj))
+                        obj = json.loads(stripped)
+                        if isinstance(obj, dict) and obj.get("type") == "stats":
+                            self.msg_q.put(("stats", run_id, obj))
                             continue
                     except Exception:
                         pass
@@ -2386,15 +2454,44 @@ class SpooferGUI:
         except Exception as exc:
             self.msg_q.put(("log", tag, "[%s] reader error: %s" % (tag, exc)))
         finally:
-            self.msg_q.put(("exit", tag))
+            self.msg_q.put(("exit", tag, run_id))
 
     def _poll_queue(self):
+        cur_run = getattr(self, "_run_id", 0)
         try:
             while True:
-                msg = self.msg_q.get_nowait()
-                kind = msg[0]
+                try:
+                    msg = self.msg_q.get_nowait()
+                    kind = msg[0]
+                except queue.Empty:
+                    break
+                except Exception:
+                    continue
                 if kind == "stats":
-                    _, obj = msg
+                    if not self.running:
+                        continue
+                    try:
+                        _, rid, obj = msg
+                    except (TypeError, ValueError):
+                        try:
+                            _, obj = msg
+                        except (TypeError, ValueError):
+                            continue
+                        rid = cur_run
+                    if rid != cur_run:
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    self._last_stats_t = time.time()
+                    if not getattr(self, "_stats_seen", False):
+                        self._stats_seen = True
+                        self._append("[gui] Receiving backend stats — tracker live.", "success")
+                    if ("up_bytes" not in obj and "down_bytes" not in obj
+                            and not self._traffic_warn_done):
+                        self._traffic_warn_done = True
+                        self._append("[gui] Backend does not report traffic counters "
+                                     "(up/down missing) — update sni-backend.exe / main.py "
+                                     "to the matching version.", "warning")
                     try:
                         self.active_conns = int(obj.get("active", 0))
                         self.total_conns = int(obj.get("total", 0))
@@ -2446,7 +2543,12 @@ class SpooferGUI:
                     except Exception:
                         pass
                 elif kind == "use_best_sni":
-                    _, best = msg
+                    try:
+                        _, best = msg
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(best, dict):
+                        continue
                     sni = str(best.get("sni", "") or "").strip()
                     if sni:
                         self.v_fake_sni.set(sni)
@@ -2454,7 +2556,10 @@ class SpooferGUI:
                                  "(%sms on primary endpoint)" % (sni, best.get("latency_ms")), "success")
                     self.toast("Best SNI applied: %s" % sni, "success")
                 elif kind == "log":
-                    _, tag, line = msg
+                    try:
+                        _, tag, line = msg
+                    except (TypeError, ValueError):
+                        continue
                     low = line.lower()
                     if "server started on" in low and tag == "injector":
                         self._bar_show(False)
@@ -2487,28 +2592,55 @@ class SpooferGUI:
                             hint = "WinDivert failed."
                         self._append("[gui] %s" % hint, "error")
                 elif kind == "exit":
-                    _, tag = msg
+                    try:
+                        _, tag, rid = msg
+                    except (TypeError, ValueError):
+                        try:
+                            _, tag = msg
+                        except (TypeError, ValueError):
+                            continue
+                        rid = cur_run
                     self._append("[%s] process exited." % tag, "warning")
-                    if tag == "injector" and self.running and not self.manual_stop:
-                        self.root.after(0, self._on_injector_exit)
+                    if (tag == "injector" and not self.manual_stop and self.running
+                            and rid == cur_run):
+                        self.root.after(0, lambda _rid=rid: self._on_injector_exit(_rid))
         except queue.Empty:
             pass
-        if self.running and self.start_time:
-            secs = int(time.time() - self.start_time)
-            self.lbl_uptime.config(text="%02d:%02d" % (secs // 60, secs % 60))
-        self.root.after(120, self._poll_queue)
+        except Exception:
+            # Never let one bad message kill the loop (frozen tracker/uptime).
+            pass
+        finally:
+            try:
+                if self.running and self.start_time:
+                    secs = int(time.time() - self.start_time)
+                    self.lbl_uptime.config(text="%02d:%02d" % (secs // 60, secs % 60))
+                    if (not self._no_stats_warned and self._last_stats_t
+                            and (time.time() - self._last_stats_t) > 30.0):
+                        self._no_stats_warned = True
+                        self._append("[gui] No traffic stats from backend for 30s — "
+                                     "check the console above for FATAL/WinDivert errors. "
+                                     "If using sni-backend.exe, update it to the matching version.", "warning")
+            except Exception:
+                pass
+            try:
+                self.root.after(120, self._poll_queue)
+            except Exception:
+                pass
 
     def _refresh_stats(self):
-        self.lbl_active.config(text="● Active %d" % self.active_conns)
-        self.lbl_total.config(text="Total %d" % self.total_conns)
-        self.lbl_okfail.config(text="OK %d · Fail %d" % (self.success_conns, self.failed_conns))
-        best = self.best_endpoint or "—"
-        self.lbl_best.config(text="Best %s (%.0f%%)" % (best, self.success_rate * 100.0))
-        if self.best_method:
-            runs = self.method_runs
-            self.lbl_method.config(text="Method %s · %.0f%% (%d)" % (self.best_method, self.method_rate * 100.0, runs))
-        else:
-            self.lbl_method.config(text="Method —")
+        try:
+            self.lbl_active.config(text="● Active %d" % self.active_conns)
+            self.lbl_total.config(text="Total %d" % self.total_conns)
+            self.lbl_okfail.config(text="OK %d · Fail %d" % (self.success_conns, self.failed_conns))
+            best = self.best_endpoint or "—"
+            self.lbl_best.config(text="Best %s (%.0f%%)" % (best, self.success_rate * 100.0))
+            if self.best_method:
+                runs = self.method_runs
+                self.lbl_method.config(text="Method %s · %.0f%% (%d)" % (self.best_method, self.method_rate * 100.0, runs))
+            else:
+                self.lbl_method.config(text="Method —")
+        except Exception:
+            pass
         # Traffic tracker: totals + live rates.
         try:
             self.lbl_up.config(text="▲ %s (%s/s)" % (fmt_bytes(self.up_bytes), fmt_bytes(self.up_rate)))
@@ -2531,10 +2663,12 @@ class SpooferGUI:
         except Exception:
             pass
 
-    def _on_injector_exit(self):
+    def _on_injector_exit(self, run_id=None):
         # No auto-restart: a crash stops the engine and re-enables START,
         # so STOP always works and logs never spam "1/3" forever.
         if self.manual_stop or not self.running:
+            return
+        if run_id is not None and run_id != self._run_id:
             return
         self._terminate(self.xray_proc)
         self.xray_proc = None
@@ -2551,12 +2685,37 @@ class SpooferGUI:
         if not self.running and self.injector_proc is None:
             return
         self.manual_stop = True
-        self.log("Stopping...", "warning")
-        self._terminate(self.injector_proc)
-        self._terminate(self.xray_proc)
+        self.running = False
+        # Invalidate any in-flight messages from this run immediately;
+        # late stats/exit from lingering readers are then ignored by epoch.
+        self._run_id += 1
+        old_injector, old_xray = self.injector_proc, self.xray_proc
+        inj_dead = self._terminate(old_injector)
+        xray_dead = self._terminate(old_xray)
         self.injector_proc = None
         self.xray_proc = None
-        self.running = False
+        for _proc, _dead, _name in ((old_injector, inj_dead, "injector backend"),
+                                    (old_xray, xray_dead, "xray")):
+            if _proc is not None and not _dead:
+                try:
+                    _pid = _proc.pid
+                except Exception:
+                    _pid = "?"
+                self.log("Could not kill %s (PID %s) — kill it in an Admin cmd: "
+                         "taskkill /F /PID %s" % (_name, _pid, _pid), "error")
+        for _attr in ("injector_reader", "xray_reader"):
+            try:
+                _t = getattr(self, _attr, None)
+                if _t is not None and _t.is_alive():
+                    _t.join(timeout=0.5)
+            except Exception:
+                pass
+            try:
+                setattr(self, _attr, None)
+            except Exception:
+                pass
+        self._drain_queue()
+        self.log("Stopping...", "warning")
         self.btn_start.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.DISABLED)
         self._set_status(False)
@@ -2573,19 +2732,42 @@ class SpooferGUI:
         self.toast("Engine stopped", "warning")
 
     @staticmethod
-    def _terminate(proc):
-        if proc is None or proc.poll() is not None:
-            return
+    def _terminate(proc) -> bool:
+        """Terminate a child, escalating to kill. Returns True if it is gone.
+
+        Never raises. A False return means the process survived (e.g. access
+        denied) — callers must surface that instead of silently orphaning it.
+        """
+        if proc is None:
+            return True
+        try:
+            if proc.poll() is not None:
+                return True
+        except Exception:
+            pass
         try:
             proc.terminate()
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            pass
         except Exception:
             pass
+        try:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=3)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            return proc.poll() is not None
+        except Exception:
+            return True
 
     # -- misc UI ---------------------------------------------------
     def _set_status(self, on: bool):
@@ -2627,8 +2809,11 @@ class SpooferGUI:
     def _append(self, text: str, level: str):
         ts = datetime.now().strftime("%H:%M:%S")
         line = "[%s] %s\n" % (ts, text)
-        self.console.insert(tk.END, line, level)
-        self.console.see(tk.END)
+        try:
+            self.console.insert(tk.END, line, level)
+            self.console.see(tk.END)
+        except Exception:
+            pass
         try:
             if int(self.console.index("end-1c").split(".")[0]) > 3000:
                 self.console.delete("1.0", "500.0")
@@ -2680,13 +2865,48 @@ class SpooferGUI:
         self.toast("Proxy info copied", "success")
 
     def on_closing(self):
+        # NOTE: no try/finally with destroy inside — a `return` (user said No)
+        # must leave the window alive. _shutdown_children never raises.
         if self.running:
-            if messagebox.askyesno("Exit", "Injector is running. Stop and exit?"):
-                self.manual_stop = True
-                self.stop()
-                self.root.destroy()
-        else:
+            try:
+                stop_it = messagebox.askyesno("Exit", "Injector is running. Stop and exit?")
+            except Exception:
+                stop_it = True
+            if not stop_it:
+                return
+            self.manual_stop = True
+        self._shutdown_children()
+        try:
             self.root.destroy()
+        except Exception:
+            pass
+
+    def _shutdown_children(self):
+        """Best-effort child cleanup for app exit. Never raises.
+
+        stop() early-returns when idle, but a proc handle can still exist
+        transiently — make sure no backend/xray is left running behind us.
+        (Job-object pinning + backend pipe-break exit cover abnormal deaths.)
+        """
+        try:
+            self.stop()
+        except Exception:
+            pass
+        for attr in ("injector_proc", "xray_proc"):
+            try:
+                proc = getattr(self, attr, None)
+                if proc is None:
+                    continue
+                try:
+                    if proc.poll() is None:
+                        self._terminate(proc)
+                finally:
+                    try:
+                        setattr(self, attr, None)
+                    except Exception:
+                        pass
+            except Exception:
+                continue
 
 
 def main():

@@ -544,9 +544,21 @@ async def handle(incoming_sock: socket.socket, incoming_remote_addr):
 
 
 async def stats_reporter(interval: float = 2.0):
+    failures = 0
     while True:
         try:
             print(json.dumps(get_snapshot()), flush=True)
+            failures = 0
+        except (BrokenPipeError, OSError):
+            # GUI is gone and the stdout pipe has no readers: exit instead of
+            # lingering headless forever as an orphan holding the port.
+            failures += 1
+            if failures >= 3:
+                try:
+                    shutdown_event.set()
+                except Exception:
+                    pass
+                os._exit(3)
         except Exception:
             pass
         await asyncio.sleep(interval)
@@ -608,6 +620,34 @@ if __name__ == "__main__":
         pass
 
     reset_stats()
+
+    # Single-instance guard per listen port (Windows): SO_REUSEADDR lets a
+    # second backend bind the SAME port silently, stacking orphans that steal
+    # traffic while the GUI tracks only the newest one (frozen-looking
+    # tracker). Fail fast with a clear message instead.
+    if sys.platform == "win32":
+        try:
+            import ctypes as _ctypes
+            _k32 = _ctypes.windll.kernel32
+            _mutex_name = "SNI-Spoofer-Backend-%d" % int(LISTEN_PORT)
+            _handle = _k32.CreateMutexW(None, True, _mutex_name)
+            _err = _k32.GetLastError()
+            if not _handle or _err == 183:  # ERROR_ALREADY_EXISTS
+                try:
+                    if _handle:
+                        _k32.CloseHandle(_handle)
+                except Exception:
+                    pass
+                print("FATAL: another SNI backend is already running for port %d. "
+                      "Stop it first (or kill stale sni-backend.exe processes) "
+                      "before starting a new one." % int(LISTEN_PORT), flush=True)
+                sys.exit(2)
+            # Keep the handle open until process exit (do NOT close it).
+            globals()["_single_instance_mutex"] = _handle
+        except SystemExit:
+            raise
+        except Exception:
+            pass
 
     filt = "tcp and (" + " or ".join(
         f"(ip.SrcAddr == {INTERFACE_IPV4} and ip.DstAddr == {e['ip']})"
